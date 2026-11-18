@@ -34,7 +34,16 @@ function avatarUrl(value: unknown) {
   } catch { return null; }
 }
 
+type TeamIdentity = { roster: Roster; user?: User };
+
+export function identityAvatars(identities: TeamIdentity[]) {
+  const logos = identities.flatMap(({ roster, user }) => [
+    roster.metadata?.team_avatar, roster.metadata?.avatar, user?.metadata?.team_avatar, user?.metadata?.avatar,
+  ]);
+  return [...new Set([...logos, ...identities.map(({ user }) => user?.avatar)]
+    .map(avatarUrl).filter((url): url is string => url !== null))];
+}
+
 export function teamAvatars(roster: Roster, user?: User) {
-  return [...new Set([roster.metadata?.team_avatar, roster.metadata?.avatar, user?.metadata?.team_avatar,
-    user?.metadata?.avatar, user?.avatar].map(avatarUrl).filter((url): url is string => url !== null))];
+  return identityAvatars([{ roster, user }]);
 }

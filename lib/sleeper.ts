@@ -7,7 +7,7 @@ import { hash } from "node:crypto";
 import { createSleeperClient, type ApiResult } from "./sleeper-cache";
 import { availablePicks, currentWeek, makeTeams, numeric, recentTransactions } from "./sleeper-model";
 import type { Draft, League, Matchup, NflState, Players, Roster, TradedPick, Transaction, User } from "./sleeper-types";
-import type { NflGame, NflPlayerWeek } from "./nfl-week";
+import { weekByeTeams, type NflGame, type NflPlayerWeek } from "./nfl-week";
 import { bracketDecided, finalGame, lastScored, seasonGames, validWeek, type BracketGame } from "./league-results";
 
 export const LEAGUE_ID = "1394584575056822272";
@@ -53,16 +53,19 @@ export const getLeagueData = cache(async (id: string = LEAGUE_ID) => {
 export type LeagueData = Awaited<ReturnType<typeof getLeagueData>>;
 const scheduleCheck = (v: unknown): v is NflGame => object(v) && [v.game_id, v.status, v.home, v.away, v.date].every(string) && validWeek(v.week);
 const playerWeekCheck = (v: unknown): v is NflPlayerWeek => object(v) && string(v.player_id) &&
-  [v.game_id, v.team, v.opponent].every(value => optional(value, string)) && numbers(v.stats);
+  [v.game_id, v.team, v.opponent].every(value => optional(value, string)) && numbers(v.stats) &&
+  optional(v.player, player => object(player) && [player.position, player.injury_status].every(value => optional(value, string)));
 export const getNflWeek = cache(async (season: string, week: number, historical: boolean) => {
   await connection();
   if (!/^\d{4}$/.test(season) || !validWeek(week)) return null;
-  const [schedule, players] = await Promise.all([
+  const [schedule, projections, stats] = await Promise.all([
     nflClient.get(`schedule/nfl/regular/${season}`, list(scheduleCheck)),
-    nflClient.get(`${historical ? "stats" : "projections"}/nfl/${season}/${week}?season_type=regular`, list(playerWeekCheck), historical ? 3600 : 300),
+    nflClient.get(`projections/nfl/${season}/${week}?season_type=regular`, list(playerWeekCheck), historical ? 3600 : 300),
+    historical ? nflClient.get(`stats/nfl/${season}/${week}?season_type=regular`, list(playerWeekCheck), 3600) : null,
   ]);
   const games = (schedule.data ?? []).filter(game => game.week === week);
-  return { games, players: players.data ?? [], sources: [schedule, players] };
+  return { games, byeTeams: weekByeTeams(schedule.data ?? [], week, season),
+    projections: projections.data ?? [], stats: stats?.data ?? [], sources: [schedule, projections, ...(stats ? [stats] : [])] };
 });
 
 export const getWeeklyMatchups = cache(async (id: string, week: number) => {

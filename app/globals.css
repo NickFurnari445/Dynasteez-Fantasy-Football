@@ -402,6 +402,10 @@ select:focus-visible, .table-wrap:focus-visible { outline: 2px solid var(--accen
 .record-entries { margin: 0; padding: 0; list-style: none; }
 .record-entries li { padding: 15px 20px; }
 .record-entries li + li { border-top: 1px solid var(--border); }
+.record-holder { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; vertical-align: middle; }
+.record-holder > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.record-holder .avatar-fallback { font-size: 10px; }
+.award-holder { display: block; }
 .record-value { font-size: 23px; color: var(--accent); }
 .awards-list { margin: 0; padding: 0 22px; }
 .awards-list div { padding: 12px 0; }
@@ -548,6 +552,8 @@ td .team-avatar, .schedule-side .team-avatar { margin-inline-end: 8px; }
 .position-superflex { background: #f6e2ec; color: #762b56; }
 .lineup-player { min-width: 0; overflow-wrap: anywhere; }
 .lineup-score { text-align: right; font-variant-numeric: tabular-nums; }
+.lineup-score .projection-label { max-width: 76px; margin-inline-start: auto; }
+.lineup-designation { font-size: 12px; }
 .lineup-empty { padding: 9px 18px; color: var(--muted); font-size: 13px; }
 
 @media (max-width: 720px) {

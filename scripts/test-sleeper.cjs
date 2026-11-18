@@ -140,12 +140,16 @@ test('power formula weights tie-adjusted win rate and normalized PPG', () => {
 test('single-game records preserve real zeroes, cents, and co-record holders', () => {
   const scores = [final(1, 120.03, 120.02), final(2, 0, 100), final(3, 120.03, 120.03)];
   assert.equal(results.margin(scores[0]), 0.01);
-  const [high, low, close, blowout] = results.gameRecords(scores);
+  const [high, low, close, blowout, defeat] = results.gameRecords(scores);
   assert.equal(high.length, 3);
   assert.equal(low[0].value, 0);
   assert.equal(close[0].value, 0.01);
   assert.equal(blowout[0].id, 2);
   assert.equal(blowout[0].value, 100);
+  assert.equal(defeat[0].id, 1);
+  assert.equal(defeat[0].opponent, 2);
+  assert.equal(defeat[0].game, blowout[0].game);
+  assert.deepEqual(defeat[0].game.scores, [0, 100]);
 });
 
 test('season awards wait for complete coverage and comeback waits for the season to finish', () => {
@@ -172,7 +176,8 @@ test('championship requires a completed league and a decided title bracket', () 
 const { managerIdentity, teamAvatars } = require(path.join(directory, 'league-identity.js'));
 const { buildEdition, preview, weeklyStandings } = require(path.join(directory, 'weekly-editorial.js'));
 const { lineupGroups } = require(path.join(directory, 'weekly-lineup.js'));
-const { offensiveProjection, nflGameStatus } = require(path.join(directory, 'nfl-week.js'));
+const { offensiveProjection, lineupProjection, nflGameStatus, weekByeTeams } = require(path.join(directory, 'nfl-week.js'));
+const { identityAvatars } = require(path.join(directory, 'league-identity.js'));
 
 test('known IDs, casing, and team names preserve identity independently', () => {
   assert.equal(managerIdentity({user_id:'739566917194530816', display_name:'New handle'}).name, 'Blake Dempsey');
@@ -245,4 +250,34 @@ test('offensive estimates use league weights and require supported weekly projec
   assert.equal(nflGameStatus('complete'), 'Final');
   assert.equal(nflGameStatus('in_game'), 'Live');
   assert.equal(nflGameStatus('pre_game'), 'Upcoming');
+});
+
+test('published lineup projections take precedence over bye and injury, including K, D/ST, and zero', () => {
+  for (const [position, score, bye, injury] of [
+    ['WR', 12.25, false, 'Questionable'], ['RB', 4, true, 'Out'], ['QB', 0, true, 'Doubtful'],
+    ['K', 8.5, false, 'Out'], ['DEF', 6.25, false, null],
+  ]) {
+    const entry = {game_id: bye ? null : 'game', stats:{pts_ppr:score}};
+    assert.equal(lineupProjection(entry, position, {}, bye, injury).score, score);
+    assert.equal(lineupProjection(entry, position, {}, bye, injury).status, null);
+  }
+  assert.equal(lineupProjection(undefined, 'WR', {}, true, 'Out').status, 'BYE');
+  assert.equal(lineupProjection(undefined, 'WR', {}, false, 'Questionable').status, 'QUESTIONABLE');
+  assert.equal(lineupProjection(undefined, 'WR', {}, false, null).status, '—');
+});
+
+test('bye detection requires a published week and a complete schedule for the NFL club', () => {
+  const schedule = Array.from({length: 18}, (_, i) => ({week: i + 1, home: i === 9 ? 'SEA' : 'LA', away:'ARI'}));
+  assert.deepEqual([...weekByeTeams(schedule, 10, '2026')], ['LAR']);
+  assert.equal(weekByeTeams(schedule.slice(0, 16), 10, '2026').size, 0);
+  assert.equal(weekByeTeams(schedule.filter(game => game.week !== 10), 10, '2026').size, 0);
+});
+
+test('team logos from owner-matched seasons precede personal avatars', () => {
+  const personal = 'a'.repeat(32);
+  const logo = 'https://sleepercdn.com/uploads/team.jpg';
+  assert.deepEqual(identityAvatars([
+    { roster:{roster_id: 3}, user:{user_id:'manager', avatar:personal} },
+    { roster:{roster_id: 8, metadata:{team_avatar:logo}}, user:{user_id:'manager'} },
+  ]), [logo, `https://sleepercdn.com/avatars/thumbs/${personal}`]);
 });

@@ -115,7 +115,9 @@ export function gameRecords(games: Result[]) {
     const value = (highest ? Math.max : Math.min)(...rows.map(row => row.value));
     return rows.filter(row => row.value === value);
   };
-  return [extremes(performances, true), extremes(performances, false), extremes(victories, false), extremes(victories, true)];
+  const blowouts = extremes(victories, true);
+  const defeats = blowouts.map(row => ({ ...row, id: row.opponent, opponent: row.id }));
+  return [extremes(performances, true), extremes(performances, false), extremes(victories, false), blowouts, defeats];
 }
 
 export function regularSeasonComplete(league: League, teams: Team[], results: Result[]) {

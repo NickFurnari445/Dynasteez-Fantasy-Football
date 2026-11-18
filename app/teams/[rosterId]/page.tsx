@@ -8,7 +8,7 @@ import { DataStatus, Empty, LoadingLeague, TeamLink } from "@/app/components/lea
 import { TeamSwitcher } from "@/app/components/team-switcher";
 import { Avatar } from "@/app/components/avatar";
 import { lastScored, validWeek } from "@/lib/league-results";
-import { nflGameStatus, offensiveProjection } from "@/lib/nfl-week";
+import { lineupProjection, nflGameStatus, nflTeamCode } from "@/lib/nfl-week";
 import { lineupGroups, playerHeadshot } from "@/lib/weekly-lineup";
 
 export const metadata = { title: "Team roster" };
@@ -33,7 +33,9 @@ async function TeamPageContent({ params, searchParams }: Props) {
   const [source, nfl] = league && week !== undefined
     ? await Promise.all([getWeeklyMatchups(league.league_id, week), getNflWeek(league.season, week, week <= through)])
     : [null, null];
-  const playerWeeks = new Map(nfl?.players.map(entry => [entry.player_id, entry]));
+  const projections = new Map(nfl?.projections.map(entry => [nflTeamCode(entry.player_id), entry]));
+  const playerStats = new Map(nfl?.stats.map(entry => [nflTeamCode(entry.player_id), entry]));
+  const currentPlayerStatus = week === undefined || week === active && week > through;
   const matchup = source?.data?.find(row => row.roster_id === team.id) ?? null;
   const isCurrent = week === undefined || (league?.status === "in_season" && week === latest) || league?.status === "pre_draft";
   const isFinal = week !== undefined && week <= through && matchup !== null;
@@ -64,30 +66,40 @@ async function TeamPageContent({ params, searchParams }: Props) {
       <div className="panel-heading"><div><p className="eyebrow">{week ? `Week ${week}` : "Current roster"}</p><h2>Player roster</h2></div>
         {hasScore && matchup && <div className="lineup-total"><strong>{points(matchupScore(matchup))}</strong><small>{isFinal ? "Final team total" : "Current team total"}</small></div>}
       </div>
-      <p className="section-note">Weekly actuals follow Sleeper’s league scoring and include commissioner overrides in team totals. Offensive projections are estimates from Sleeper’s weekly stat projections and league weights. Full projected totals, kicker projections, and defense projections are unavailable. {isCurrent ? "Reserve and taxi assignments reflect the current roster." : "Sleeper’s historical matchup data does not identify injured reserve or taxi assignments."}</p>
+      <p className="section-note">Weekly actuals follow league scoring, including commissioner overrides in team totals. Projections use league weights where supported. “Sleeper PPR projection” is Sleeper’s published value and can differ from league scoring. Historical projections and player designations depend on the available weekly data. {isCurrent ? "Reserve and taxi assignments reflect the current roster." : "Sleeper’s historical matchup data does not identify injured reserve or taxi assignments."}</p>
       {groups.map(group => <section className="lineup-group" key={group.title}>
         <header><h3>{group.title}</h3><span>Fantasy pts</span></header>
         {group.rows.length ? <ul>{group.rows.map((row, index) => {
           const headshot = row.id && playerHeadshot(row.id, row.player?.position);
-          const reported = row.id ? playerWeeks.get(row.id) : undefined;
-          const nflTeam = reported?.team ?? (isCurrent ? row.player?.team : null);
+          const id = row.id ? nflTeamCode(row.id) : null;
+          const projection = id ? projections.get(id) : undefined;
+          const stats = id ? playerStats.get(id) : undefined;
+          const reported = stats ?? projection;
+          const position = reported?.player?.position ?? row.player?.position;
+          const club = stats?.team ?? projection?.team ?? (position === "DEF" || (id && /^[A-Z]{2,3}$/.test(id)) ? id : currentPlayerStatus ? row.player?.team : null);
+          const nflTeam = club ? nflTeamCode(club) : null;
           const game = nfl?.games.find(game => game.game_id === reported?.game_id) ??
-            (nflTeam ? nfl?.games.find(game => [game.home, game.away].includes(nflTeam)) : undefined);
+            (nflTeam ? nfl?.games.find(game => [game.home, game.away].some(team => nflTeamCode(team) === nflTeam)) : undefined);
           const status = nflGameStatus(game?.status);
           const opponent = game && nflTeam
-            ? (game.home === nflTeam ? `vs ${game.away}` : game.away === nflTeam ? `at ${game.home}` : null)
+            ? (nflTeamCode(game.home) === nflTeam ? `vs ${game.away}` : nflTeamCode(game.away) === nflTeam ? `at ${game.home}` : null)
             : null;
-          const projected = status === "Upcoming" ? offensiveProjection(row.player?.position, reported, league?.scoring_settings) : null;
+          const injury = currentPlayerStatus ? row.player?.injury_status ?? projection?.player?.injury_status : null;
+          const projected = lineupProjection(projection, position, league?.scoring_settings,
+            !!nflTeam && !game && !!nfl?.byeTeams.has(nflTeam), injury);
           const actual = status === "Upcoming" || status === "Unavailable" || (status === null && !isFinal && row.score === 0)
             ? null : row.score;
-          const label = actual !== null ? isFinal || status === "Final" ? "Final" : status === "Live" ? "Live" : "Current"
-            : projected !== null ? "Projected" : null;
+          const actualLabel = isFinal || status === "Final" ? "Final" : status === "Live" ? "Live" : "Current";
           return <li key={row.id ?? `empty-${index}`} className="lineup-row">
             <span className={`position-badge position-${row.slot.toLowerCase()}`}>{row.slot}</span>
             <div className="lineup-photo">{headshot && <Avatar sources={[headshot]} className="player-headshot" size={40}/>}</div>
             <div className="lineup-player"><strong>{row.id ? playerName(row.player, row.id) : "Empty slot"}</strong>
-              {row.id && <small>{[row.player?.position, nflTeam, opponent, status, isCurrent ? row.player?.injury_status : null].filter(Boolean).join(" · ") || "Player details unavailable"}</small>}</div>
-            <div className="lineup-score"><strong>{points(actual ?? projected)}</strong>{label && <small>{label}</small>}</div>
+              {row.id && <small>{[position, nflTeam, opponent, status, injury].filter(Boolean).join(" · ") || "Player details unavailable"}</small>}</div>
+            <div className="lineup-score">
+              {projected.score !== null && <><strong>{points(projected.score)}</strong><small className="projection-label">{projected.label}</small></>}
+              {projected.status && <strong className="lineup-designation">{projected.status}</strong>}
+              {actual !== null && <small>{actualLabel} {points(actual)}</small>}
+            </div>
           </li>;
         })}</ul> : <p className="lineup-empty">{group.available ? "No players listed." : "Unavailable for this week."}</p>}
       </section>)}

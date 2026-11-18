@@ -1,12 +1,12 @@
 import { Avatar } from "./avatar";
 import { preview, recap, weeklyStandings } from "@/lib/weekly-editorial";
-import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { addResult, championship, emptyRecord, finalGame, gameRecords, margin, perGame, rankTeams, recordLabel, regularSeasonComplete, resultsByRoster, seasonAwards, validWeek, winnerIndex, winPct, type RecordLine } from "@/lib/league-results";
 import { points } from "@/lib/sleeper-model";
 import { getLeagueResults, type SeasonResults } from "@/lib/sleeper";
 import type { Team } from "@/lib/sleeper-types";
+import { identityAvatars } from "@/lib/league-identity";
 import { DataStatus, Empty } from "./league-views";
 
 type Query = Record<string, string | string[] | undefined>;
@@ -15,6 +15,34 @@ const manager = (team?: Team) => team?.manager ?? "Manager unavailable";
 const findTeam = (season: SeasonResults, id: number) => season.data.teams.find(team => team.id === id);
 const owner = (season: SeasonResults, id: number) => season.uncertain.has(id) ? null : findTeam(season, id)?.roster.owner_id || null;
 const attributed = (season: SeasonResults, id: number) => owner(season, id) ? manager(findTeam(season, id)) : "Manager attribution unavailable";
+
+function historyAvatars(seasons: SeasonResults[], preferred: SeasonResults, team: Team) {
+  const id = team.roster.owner_id;
+  const identity = (season: SeasonResults, entry: Team) => ({
+    roster: entry.roster,
+    user: season.data.users.data?.find(user => user.user_id === id),
+  });
+  return identityAvatars([
+    identity(preferred, team),
+    ...seasons.filter(season => season !== preferred).flatMap(season => season.data.teams
+      .filter(entry => !!id && owner(season, entry.id) === id).map(entry => identity(season, entry))),
+  ]);
+}
+
+function HistoryAvatar({ sources, name, size = 28 }: { sources?: string[]; name?: string | null; size?: number }) {
+  const initials = name?.trim().slice(0, 2).toUpperCase() || "—";
+  return <Avatar sources={sources} size={size} fallback={<span className="avatar-fallback" aria-hidden="true"
+    style={{ width: size, height: size }}>{initials}</span>}/>;
+}
+
+function RecordHolder({ seasons, season, id }: { seasons: SeasonResults[]; season: SeasonResults; id: number }) {
+  const team = findTeam(season, id);
+  const name = team?.name ?? `Roster #${id}`;
+  return <span className="record-holder">
+    <HistoryAvatar sources={team && owner(season, id) ? historyAvatars(seasons, season, team) : undefined} name={name}/>
+    <span>{name}</span>
+  </span>;
+}
 
 function Stats({ items }: { items: [string, ReactNode][] }) {
   return <dl className="stat-grid">{items.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
@@ -34,7 +62,7 @@ export function Filters({ action, fields }: { action: string; fields: { name: st
 }
 
 type Profile = {
-  id: string; team: Team; avatar?: string | null; current: boolean;
+  id: string; team: Team; season: SeasonResults; current: boolean;
   seasons: Set<string>; regular: RecordLine; playoff: RecordLine;
   appearances: number; finals: number; championships: number; runnersUp: number;
 };
@@ -49,7 +77,7 @@ function managerHistory(seasons: SeasonResults[]) {
       const id = team.roster.owner_id;
       if (!id) continue;
       const person = people.get(id) ?? {
-        id, team, avatar: data.users.data?.find(user => user.user_id === id)?.avatar, current: index === 0,
+        id, team, season, current: index === 0,
         seasons: new Set<string>(), regular: emptyRecord(), playoff: emptyRecord(),
         appearances: 0, finals: 0, championships: 0, runnersUp: 0,
       };
@@ -89,9 +117,7 @@ function ManagerHistory({ seasons }: { seasons: SeasonResults[] }) {
     <p className="source-note">Sleeper’s weekly matches identify roster slots. Manager attribution uses each season’s listed primary owners and excludes slots with a detected ownership change. Transfers before tracking began may be unavailable.</p>
     <div className="profile-grid">{profiles.map(person => <article key={person.id} className="panel profile-card">
       <header className="profile-heading">
-        {person.avatar && /^[a-z0-9_-]+$/i.test(person.avatar)
-          ? <Image unoptimized src={`https://sleepercdn.com/avatars/thumbs/${person.avatar}`} width={52} height={52} alt="" />
-          : <span className="avatar-fallback" aria-hidden="true">{manager(person.team).slice(0, 2).toUpperCase()}</span>}
+        <HistoryAvatar sources={historyAvatars(seasons, person.season, person.team)} name={person.team.manager ?? person.team.name} size={52}/>
         <div><h2>{manager(person.team)}</h2><p>{person.team.name}{!person.current && " · Last listed team"}</p></div>
       </header>
       <h3>Regular-season history</h3>
@@ -243,7 +269,7 @@ function Records({ seasons, query }: { seasons: SeasonResults[]; query: Query })
   const filtered = selected ? [selected] : seasons;
   const context = new Map(filtered.flatMap(season => season.final.map(game => [game, season] as const)));
   const results = [...context.keys()].filter(game => game.phase !== "unknown" && (phase === "all" || game.phase === phase));
-  const categories = ["Highest weekly score", "Lowest weekly score", "Closest game", "Biggest blowout"];
+  const categories = ["Highest weekly score", "Lowest weekly score", "Closest game", "Biggest blowout", "Largest margin of defeat"];
   return <>
     <p className="section-description">Single-week records use completed head-to-head matchups. Tied games count for scoring records. Victory margins require a winner.</p>
     <Filters action="/records" fields={[
@@ -253,11 +279,15 @@ function Records({ seasons, query }: { seasons: SeasonResults[]; query: Query })
     <div className="record-grid">{gameRecords(results).map((rows, index) => <Panel key={categories[index]} title={categories[index]}>
       {rows.length ? <ul className="record-entries">{rows.map(row => {
         const season = context.get(row.game)!;
+        const side = row.game.sides.indexOf(row.id);
+        const holder = findTeam(season, row.id)?.name ?? `Roster #${row.id}`;
+        const opponent = findTeam(season, row.opponent)?.name ?? `Roster #${row.opponent}`;
         return <li key={season.league.league_id + row.game.week + row.game.id + row.id}>
           <strong className="record-value">{points(row.value)} pts</strong>
-          <h3>{findTeam(season, row.id)?.name}</h3>
+          <h3><RecordHolder seasons={seasons} season={season} id={row.id}/></h3>
           <p>{attributed(season, row.id)} · {season.league.season} Week {row.game.week}</p>
-          <p>vs. {findTeam(season, row.opponent)?.name ?? "Opponent unavailable"} · {margin(row.game) === 0 ? "Tie" : `${points(margin(row.game))}-point ${winnerIndex(row.game) === row.game.sides.indexOf(row.id) ? "win" : "loss"}`}</p>
+          <p>Final score: {holder} {points(row.game.scores[side])} – {opponent} {points(row.game.scores[1 - side])}</p>
+          <p>{margin(row.game) === 0 ? "Tie" : `${points(margin(row.game))}-point ${winnerIndex(row.game) === side ? "win" : "loss"}`}</p>
         </li>;
       })}</ul> : <Empty>No verified result for this category.</Empty>}
     </Panel>)}</div>
@@ -266,10 +296,13 @@ function Records({ seasons, query }: { seasons: SeasonResults[]; query: Query })
       {filtered.map(season => {
         const qualifiersConfirmed = season.qualifierIds.size > 0 && season.qualifierIds.size === season.league.settings.playoff_teams;
         const awards = seasonAwards(season.league, season.data.teams, season.regular, qualifiersConfirmed ? season.qualifierIds : new Set());
+        const awardHolder = (id: number, value: string) => <span className="award-holder" key={id}>
+          <RecordHolder seasons={seasons} season={season} id={id}/> · {attributed(season, id)} · {value}
+        </span>;
         return <Panel key={season.league.league_id} title={season.league.season + " Awards"}>{awards ? <dl className="awards-list">
-          <div><dt>Points For Champion</dt><dd>{awards.points.map(row => `${row.team.name} · ${attributed(season, row.team.id)} · ${points(row.record.cents / 100)} pts`).join(" / ")}</dd></div>
-          <div><dt>Regular-Season Manager of the Year</dt><dd>{awards.manager.map(row => `${row.team.name} · ${attributed(season, row.team.id)} · ${recordLabel(row.record)}`).join(" / ")}</dd></div>
-          <div><dt>Comeback of the Year</dt><dd>{awards.comeback.length ? awards.comeback.map(row => `${row.team.name} · ${attributed(season, row.team.id)} · ${pct(row.before)} to ${pct(row.after)}`).join(" / ")
+          <div><dt>Points For Champion</dt><dd>{awards.points.map(row => awardHolder(row.team.id, `${points(row.record.cents / 100)} pts`))}</dd></div>
+          <div><dt>Regular-Season Manager of the Year</dt><dd>{awards.manager.map(row => awardHolder(row.team.id, recordLabel(row.record)))}</dd></div>
+          <div><dt>Comeback of the Year</dt><dd>{awards.comeback.length ? awards.comeback.map(row => awardHolder(row.team.id, `${pct(row.before)} to ${pct(row.after)}`))
             : season.league.status !== "complete" ? "Award pending completion of the playoffs."
               : qualifiersConfirmed ? "No playoff qualifier met the comeback criteria." : "The full playoff field could not be verified."}</dd></div>
         </dl> : <Empty>Awards will appear once the required regular-season results are complete and verified.</Empty>}</Panel>;

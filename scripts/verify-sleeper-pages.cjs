@@ -6,6 +6,7 @@ const path = require('node:path');
 const base = process.env.SLEEPER_VERIFY_URL || 'http://127.0.0.1:3127';
 const leagueId = '1394584575056822272';
 const decode = html => html.replaceAll('&#x27;', "'").replaceAll('&amp;', '&').replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('<!-- -->', '');
+const format = score => score.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
 async function snapshot(endpoint) {
   const file = createHash('sha256').update(endpoint).digest('hex') + '.json';
   return JSON.parse(await readFile(path.join(__dirname, '..', '.next', 'cache', 'sleeper', file), 'utf8')).data;
@@ -61,6 +62,9 @@ async function main() {
   assert.ok(managers.includes('Regular-season head-to-head'));
   assert.ok(managers.includes('Playoff history'));
   assert.equal((managers.match(/class="panel profile-card"/g) ?? []).length, rosters.length);
+  for (const user of users.filter(user => user.metadata?.avatar?.includes('/uploads/'))) {
+    assert.ok(managers.includes(`src="${user.metadata.avatar}"`), `Manager History uses the custom logo for ${user.display_name}`);
+  }
   const hall = await page('/hall-of-champions');
   if (league.status !== 'complete' && !league.previous_league_id) assert.ok(hall.includes('The first chapter is being written'));
   const power = await page('/power-rankings');
@@ -75,8 +79,31 @@ async function main() {
   const prior = await page(`/this-week?week=${league.settings.last_scored_leg}`);
   assert.ok(prior.includes('won by'));
   const records = await page(`/records?season=${league.season}&phase=regular`);
-  for (const label of ['Highest weekly score', 'Lowest weekly score', 'Closest game', 'Biggest blowout', 'Seasonal awards']) {
+  for (const label of ['Highest weekly score', 'Lowest weekly score', 'Closest game', 'Biggest blowout', 'Largest margin of defeat', 'Seasonal awards']) {
     assert.ok(records.includes(label), `Record book includes ${label}`);
+  }
+  const pairedScores = new Map();
+  const holderName = id => {
+    const roster = rosters.find(entry => entry.roster_id === id);
+    const user = users.find(entry => entry.user_id === roster?.owner_id);
+    return user?.metadata?.team_name?.trim() || user?.display_name || user?.username;
+  };
+  for (let week = league.settings.start_week || 1; week <= Math.min(league.settings.last_scored_leg, league.settings.playoff_week_start - 1); week++) {
+    const entries = await snapshot(`league/${leagueId}/matchups/${week}`);
+    pairedScores.set(week, entries.flatMap(row => {
+      const score = row.custom_points ?? row.points;
+      const pair = entries.filter(entry => row.matchup_id != null && entry.matchup_id === row.matchup_id);
+      const opponent = pair.find(entry => entry.roster_id !== row.roster_id);
+      const opposingScore = opponent?.custom_points ?? opponent?.points;
+      return pair.length === 2 && opponent && score != null && opposingScore != null
+        ? [`${holderName(row.roster_id)} ${format(score)} – ${holderName(opponent.roster_id)} ${format(opposingScore)}`] : [];
+    }));
+  }
+  const recordScores = [...records.matchAll(/<p>[^<]+ · (\d{4}) Week (\d+)<\/p><p>Final score: ([^<]+)<\/p>/g)];
+  assert.ok(recordScores.length >= 5, 'Each single-matchup record category displays a final score');
+  for (const [, year, week, score] of recordScores) {
+    assert.equal(year, league.season);
+    assert.ok(pairedScores.get(+week)?.includes(score), `Week ${week} final score matches the Sleeper pairing: ${score}`);
   }
   const handbook = await page('/handbook');
   for (const rule of ['maximum of 3 quarterbacks', 'Effective Fall 2027', 'Pick #10', 'Acquisition Budget', 'Five votes in favor']) {
@@ -100,7 +127,6 @@ async function main() {
     const row = paired.find(entry => entry.starters_points?.some(score => score > 0));
     if (row) {
       const archived = await page('/teams/' + row.roster_id + '?week=' + finalWeek);
-      const format = score => score.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
       assert.ok(archived.includes('Final team total') && archived.includes(format(row.custom_points ?? row.points)));
       for (const score of row.starters_points) if (score > 0) assert.ok(archived.includes(format(score)));
     }
