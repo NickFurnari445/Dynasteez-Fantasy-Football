@@ -9,9 +9,9 @@ export type Roster = {
   players?: string[] | null; starters?: string[] | null; reserve?: string[] | null; taxi?: string[] | null;
   settings?: Record<string, number>; metadata?: Record<string, string> | null;
 };
-export type User = { user_id: string; display_name?: string; username?: string; metadata?: { team_name?: string } | null };
-export type Matchup = { roster_id: number; matchup_id: number | null; points?: number | null; custom_points?: number | null };
-export type NflState = { season: string; week: number; leg?: number; season_type?: string };
+export type User = { user_id: string; display_name?: string; username?: string; avatar?: string | null; metadata?: { team_name?: string; avatar?: string; team_avatar?: string } | null };
+export type Matchup = { roster_id: number; matchup_id: number | null; points?: number | null; custom_points?: number | null; starters_points?: number[] | null; starters?: string[] | null; players?: string[] | null; players_points?: Record<string, number> | null };
+export type NflState = { season: string; week: number; leg?: number; season_type?: string; league_season?: string };
 export type TradedPick = { season: string; round: number; roster_id: number; owner_id: number };
 export type Draft = { draft_id: string; season: string; status: string; type?: string; settings?: { rounds?: number }; start_time?: number | null };
 export type Transaction = {
@@ -23,5 +23,5 @@ export type Transaction = {
 };
 export type Player = { full_name?: string; first_name?: string; last_name?: string; position?: string; team?: string | null; injury_status?: string | null };
 export type Players = Record<string, Player>;
-export type Team = { id: number; name: string; manager: string | null; coManagers: string[]; roster: Roster; wins: number | null; losses: number | null; ties: number | null; pointsFor: number | null; pointsAgainst: number | null };
+export type Team = { id: number; name: string; manager: string | null; username?: string | null; avatars?: string[]; coManagers: string[]; roster: Roster; wins: number | null; losses: number | null; ties: number | null; pointsFor: number | null; pointsAgainst: number | null };
 export type AvailablePick = { season: string; round: number; originalRosterId: number; ownerId: number; source: "scheduled" | "reported trade" };

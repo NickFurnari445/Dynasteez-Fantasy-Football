@@ -8,7 +8,7 @@ type Validator<T> = (value: unknown) => value is T;
 
 // Persistent, per-endpoint last-good responses survive process restarts on a writable Node host.
 // Read-only/ephemeral hosts degrade to a process-local cache without failing the page.
-export function createSleeperClient(options: { directory: string; fetcher?: typeof fetch; now?: () => number; timeoutMs?: number }) {
+export function createSleeperClient(options: { directory: string; fetcher?: typeof fetch; now?: () => number; timeoutMs?: number; baseUrl?: string }) {
   const memory = new Map<string, Snapshot>();
   const pending = new Map<string, Promise<ApiResult<unknown>>>();
   const retryAfter = new Map<string, number>();
@@ -31,7 +31,7 @@ export function createSleeperClient(options: { directory: string; fetcher?: type
       if (saved && now() - Date.parse(saved.fetchedAt) < ttlSeconds * 1000) return result(null);
       if ((retryAfter.get(endpoint) ?? 0) > now()) return result("Sleeper is temporarily unavailable; retrying automatically.");
       try {
-        const response = await fetcher(`https://api.sleeper.app/v1/${endpoint}`, { cache: "no-store", signal: AbortSignal.timeout(options.timeoutMs ?? 7000), headers: { Accept: "application/json" } });
+        const response = await fetcher(`${options.baseUrl ?? "https://api.sleeper.app/v1/"}${endpoint}`, { cache: "no-store", signal: AbortSignal.timeout(options.timeoutMs ?? 7000), headers: { Accept: "application/json" } });
         if (!response.ok) {
           const seconds = Number(response.headers.get("retry-after"));
           if (response.status === 429 && Number.isFinite(seconds) && seconds > 0) retryAfter.set(endpoint, now() + Math.min(seconds, 3600) * 1000);

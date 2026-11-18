@@ -1,3 +1,4 @@
+import { managerIdentity, teamAvatars } from "./league-identity";
 import type { AvailablePick, Draft, League, Matchup, NflState, Player, Roster, Team, TradedPick, Transaction, User } from "./sleeper-types";
 
 export const numeric = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -12,9 +13,9 @@ export function totalPoints(settings: Record<string, number> | undefined, field:
 export function makeTeams(rosters: Roster[], users: User[]): Team[] {
   return rosters.map(roster => {
     const user = users.find(user => user.user_id === roster.owner_id);
-    const manager = text(user?.display_name) ?? text(user?.username);
-    return { id: roster.roster_id, name: text(user?.metadata?.team_name) ?? manager ?? `Roster #${roster.roster_id} (name unavailable)`, manager,
-      coManagers: (roster.co_owners ?? []).map(id => { const co = users.find(user => user.user_id === id); return text(co?.display_name) ?? text(co?.username) ?? `User ${id} (name unavailable)`; }),
+    const { name: manager, username } = managerIdentity(user, roster.owner_id ?? undefined);
+    return { id: roster.roster_id, name: text(user?.metadata?.team_name) ?? text(user?.display_name) ?? text(user?.username) ?? `Roster #${roster.roster_id} (name unavailable)`, manager, username, avatars: teamAvatars(roster, user),
+      coManagers: (roster.co_owners ?? []).map(id => { const co = users.find(user => user.user_id === id); return managerIdentity(co, id).name ?? `User ${id} (name unavailable)`; }),
       roster, wins: numeric(roster.settings?.wins), losses: numeric(roster.settings?.losses), ties: numeric(roster.settings?.ties),
       pointsFor: totalPoints(roster.settings, "fpts"), pointsAgainst: totalPoints(roster.settings, "fpts_against") };
   }).sort((a, b) => {

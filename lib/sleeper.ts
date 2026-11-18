@@ -2,12 +2,18 @@ import "server-only";
 import { cache } from "react";
 import { connection } from "next/server";
 import path from "node:path";
+import { mkdir, readdir } from "node:fs/promises";
+import { hash } from "node:crypto";
 import { createSleeperClient, type ApiResult } from "./sleeper-cache";
 import { availablePicks, currentWeek, makeTeams, numeric, recentTransactions } from "./sleeper-model";
 import type { Draft, League, Matchup, NflState, Players, Roster, TradedPick, Transaction, User } from "./sleeper-types";
+import type { NflGame, NflPlayerWeek } from "./nfl-week";
+import { bracketDecided, finalGame, lastScored, seasonGames, validWeek, type BracketGame } from "./league-results";
 
 export const LEAGUE_ID = "1394584575056822272";
-const client = createSleeperClient({ directory: path.join(process.cwd(), ".next", "cache", "sleeper") });
+const cacheDirectory = path.join(process.cwd(), ".next", "cache", "sleeper");
+const client = createSleeperClient({ directory: cacheDirectory });
+const nflClient = createSleeperClient({ directory: path.join(cacheDirectory, "nfl"), baseUrl: "https://api.sleeper.app/" });
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const string = (v: unknown): v is string => typeof v === "string";
 const number = (v: unknown): v is number => numeric(v) !== null;
@@ -17,8 +23,9 @@ const numbers = (v: unknown) => object(v) && Object.values(v).every(number);
 const list = <T>(check: (v: unknown) => v is T) => (v: unknown): v is T[] => Array.isArray(v) && v.every(check);
 const leagueCheck = (v: unknown): v is League => object(v) && string(v.league_id) && string(v.name) && string(v.season) && string(v.status) && v.sport === "nfl" && numbers(v.settings) && optional(v.previous_league_id, string) && optional(v.roster_positions, strings) && optional(v.scoring_settings, numbers);
 const rosterCheck = (v: unknown): v is Roster => object(v) && number(v.roster_id) && optional(v.owner_id, string) && optional(v.co_owners, strings) && optional(v.settings, numbers) && [v.players,v.starters,v.reserve,v.taxi].every(value => optional(value, strings));
-const userCheck = (v: unknown): v is User => object(v) && string(v.user_id) && optional(v.display_name, string) && optional(v.username, string) && optional(v.metadata, value => object(value) && optional(value.team_name, string));
-const matchupCheck = (v: unknown): v is Matchup => object(v) && number(v.roster_id) && (v.matchup_id === null || number(v.matchup_id)) && optional(v.points, number) && optional(v.custom_points, number);
+const userCheck = (v: unknown): v is User => object(v) && string(v.user_id) && optional(v.display_name, string) && optional(v.username, string) && optional(v.avatar, string) && optional(v.metadata, value => object(value) && optional(value.team_name, string));
+const matchupCheck = (v: unknown): v is Matchup => object(v) && number(v.roster_id) && (v.matchup_id === null || number(v.matchup_id)) && optional(v.points, number) && optional(v.custom_points, number) && optional(v.starters, strings) && optional(v.players, strings) && optional(v.players_points, numbers) && optional(v.starters_points, value => Array.isArray(value) && value.every(number));
+const bracketCheck = (v: unknown): v is BracketGame => object(v) && number(v.r) && number(v.m) && [v.p, v.t1, v.t2, v.w, v.l].every(value => optional(value, number));
 const stateCheck = (v: unknown): v is NflState => object(v) && string(v.season) && number(v.week) && optional(v.leg, number);
 const pickCheck = (v: unknown): v is TradedPick => object(v) && string(v.season) && number(v.round) && number(v.roster_id) && number(v.owner_id);
 const draftCheck = (v: unknown): v is Draft => object(v) && string(v.draft_id) && string(v.season) && string(v.status) && optional(v.type, string) && optional(v.start_time, number) && optional(v.settings, value => object(value) && optional(value.rounds, number));
@@ -36,12 +43,32 @@ export const getLeagueData = cache(async (id: string = LEAGUE_ID) => {
   const teams = makeTeams(rosters.data ?? [], users.data ?? []);
   const week = league.data ? currentWeek(league.data, state.data) : null;
   const matchups = week !== null ? await client.get(`league/${id}/matchups/${week}`, list(matchupCheck)) : null;
-  return { league, teams, week, matchups, drafts, tradedPicks,
+  const uncertain = new Set((await Promise.all((rosters.data ?? []).map(async roster =>
+    await observedChange(id, roster) ? roster.roster_id : null))).filter(value => value !== null));
+  return { league, teams, users, state, rosters, uncertain, week, matchups, drafts, tradedPicks,
     picks: tradedPicks.data && drafts.data && rosters.data ? availablePicks(rosters.data, drafts.data, tradedPicks.data) : null,
     sources: [league, rosters, users, state, drafts, tradedPicks, ...(matchups ? [matchups] : [])],
   };
 });
 export type LeagueData = Awaited<ReturnType<typeof getLeagueData>>;
+const scheduleCheck = (v: unknown): v is NflGame => object(v) && [v.game_id, v.status, v.home, v.away, v.date].every(string) && validWeek(v.week);
+const playerWeekCheck = (v: unknown): v is NflPlayerWeek => object(v) && string(v.player_id) &&
+  [v.game_id, v.team, v.opponent].every(value => optional(value, string)) && numbers(v.stats);
+export const getNflWeek = cache(async (season: string, week: number, historical: boolean) => {
+  await connection();
+  if (!/^\d{4}$/.test(season) || !validWeek(week)) return null;
+  const [schedule, players] = await Promise.all([
+    nflClient.get(`schedule/nfl/regular/${season}`, list(scheduleCheck)),
+    nflClient.get(`${historical ? "stats" : "projections"}/nfl/${season}/${week}?season_type=regular`, list(playerWeekCheck), historical ? 3600 : 300),
+  ]);
+  const games = (schedule.data ?? []).filter(game => game.week === week);
+  return { games, players: players.data ?? [], sources: [schedule, players] };
+});
+
+export const getWeeklyMatchups = cache(async (id: string, week: number) => {
+  await connection();
+  return client.get(`league/${id}/matchups/${week}`, list(matchupCheck));
+});
 export const getPlayers = cache(async () => {
   await connection();
   return client.get("players/nfl", playersCheck, 86400);
@@ -60,7 +87,8 @@ export const getHistory = cache(async () => {
   await connection();
   const seasons: LeagueData[] = [];
   const visited = new Set<string>();
-  let id: string | null = LEAGUE_ID;
+  const root = await getLeagueData();
+  let id: string | null = await renewedLeague(root) ?? LEAGUE_ID;
   let warning: string | null = null;
   while (id && seasons.length < 20) {
     if (visited.has(id)) { warning = "Sleeper returned a repeated previous-league link. History stops here."; break; }
@@ -68,8 +96,117 @@ export const getHistory = cache(async () => {
     const data = await getLeagueData(id);
     seasons.push(data);
     if (!data.league.data) { warning = "An older season could not be loaded. Available seasons are shown below."; break; }
-    id = data.league.data.previous_league_id ?? null;
+    id = id === LEAGUE_ID ? null : data.league.data.previous_league_id ?? null;
   }
   if (id && seasons.length === 20) warning = "Showing the first 20 linked seasons.";
+  return { seasons, warning };
+});
+
+// Discover renewals through current members, then require an unbroken link to Dynasteez.
+async function renewedLeague(root: LeagueData) {
+  const original = root.league.data;
+  // Sleeper can publish its next league season before the NFL season changes.
+  const year = Number(root.state.data?.league_season ?? root.state.data?.season);
+  if (!original || !root.users.data?.length || !Number.isInteger(year) || year <= Number(original.season)) return original?.league_id;
+  const memberIds = [...new Set(root.teams.map(team => team.roster.owner_id))]
+    .filter((id): id is string => !!id && /^\d+$/.test(id));
+  for (const season of [year, year - 1].filter(value => value > Number(original.season))) {
+    const sources = await Promise.all(memberIds.map(id => client.get(`user/${id}/leagues/nfl/${season}`, list(leagueCheck), 21600)));
+    const candidates = new Map(sources.flatMap(source => source.data ?? [])
+      .filter(league => Number(league.season) === season).map(league => [league.league_id, league]));
+    const linked: string[] = [];
+    for (const candidate of candidates.values()) {
+      let league: League | null = candidate;
+      for (let depth = 0; league && depth < 20; depth++) {
+        const previous = league.previous_league_id;
+        if (previous === original.league_id) { linked.push(candidate.league_id); break; }
+        if (!previous || !/^\d{15,22}$/.test(previous)) break;
+        const parent: ApiResult<League> = await client.get(`league/${previous}`, leagueCheck, 21600);
+        if (parent.data && Number(parent.data.season) >= Number(league.season)) break;
+        league = parent.data;
+      }
+    }
+    if (linked.length === 1) return linked[0];
+    if (linked.length > 1) return original.league_id;
+  }
+  return original.league_id;
+}
+
+export const getCurrentLeagueData = cache(async () => {
+  const root = await getLeagueData();
+  const id = await renewedLeague(root);
+  return id && id !== LEAGUE_ID ? getLeagueData(id) : root;
+});
+
+// Matchups identify roster slots, not owners. Withhold attribution for any slot
+// whose primary ownership changed while this installation was observing it.
+const ownershipObservations = new Map<string, Set<string>>();
+async function observedChange(id: string, roster: Roster) {
+  const key = `${id}/${roster.roster_id}`;
+  const marker = hash("sha256", roster.owner_id || "vacant");
+  const observed = ownershipObservations.get(key) ?? new Set<string>();
+  ownershipObservations.set(key, observed);
+  observed.add(marker);
+  const directory = path.join(cacheDirectory, "ownership", key);
+  try {
+    await mkdir(path.join(directory, marker), { recursive: true });
+    for (const file of await readdir(directory)) observed.add(file);
+  } catch { /* Process-local observations remain available. */ }
+  return observed.size > 1;
+}
+
+async function loadSeasonResults(data: LeagueData, league: League) {
+  const id = league.league_id;
+  const through = lastScored(league);
+  const start = validWeek(league.settings.start_week) ? league.settings.start_week : 1;
+  const end = league.status === "complete" ? through : 18;
+  const weekNumbers = Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => start + index);
+  const bracket = await client.get(`league/${id}/winners_bracket`, list(bracketCheck), league.status === "complete" ? 900 : 60);
+  const results: ApiResult<Matchup[]>[] = [];
+  for (let i = 0; i < weekNumbers.length; i += 6) {
+    results.push(...await Promise.all(weekNumbers.slice(i, i + 6).map(week =>
+      client.get(`league/${id}/matchups/${week}`, list(matchupCheck), week < through || league.status === "complete" ? 900 : 60))));
+  }
+  const rosterIds = new Set(data.teams.map(team => team.id));
+  const weeks = results.map((source, index) => ({
+    week: weekNumbers[index], source,
+    games: seasonGames(league, data.state.data, weekNumbers[index], source.data ?? [], rosterIds),
+  }));
+  const final = weeks.flatMap(week => week.games).filter(finalGame);
+  const regular = final.filter(game => game.phase === "regular");
+  const playoffStart = league.settings.playoff_week_start;
+  const playoffStarted = validWeek(playoffStart) && through >= playoffStart;
+  const decided = (bracket.data ?? []).filter(game => bracketDecided(game) && rosterIds.has(game.w!) && rosterIds.has(game.l!));
+  const playoff = playoffStarted ? decided.filter(game => game.p == null || game.p === 1) : [];
+  const qualifierIds = new Set(playoffStarted ? decided.flatMap(game => [game.w!, game.l!]) : []);
+  return {
+    data, league, weeks, final, regular, bracket: bracket.data ?? [], playoff, qualifierIds, uncertain: data.uncertain,
+    sources: [...data.sources, bracket, ...results],
+  };
+}
+export type SeasonResults = Awaited<ReturnType<typeof loadSeasonResults>>;
+
+export const getLeagueResults = cache(async () => {
+  const root = await getLeagueData();
+  const latest = await renewedLeague(root);
+  const seasons: SeasonResults[] = [];
+  const ids = new Set<string>();
+  let id = latest;
+  let year = Infinity;
+  let warning = root.league.data ? null : "Sleeper league data is temporarily unavailable.";
+  while (id && ids.size < 20) {
+    if (!/^\d{15,22}$/.test(id) || ids.has(id)) { warning = "A Sleeper season link could not be verified."; break; }
+    ids.add(id);
+    const data = await getLeagueData(id);
+    const league = data.league.data;
+    if (!league || league.league_id !== id || !(Number(league.season) < year)) {
+      warning = "A Sleeper season could not be loaded or verified.";
+      break;
+    }
+    seasons.push(await loadSeasonResults(data, league));
+    if (id === LEAGUE_ID) break; // The configured league is the inaugural season.
+    year = Number(league.season);
+    id = league.previous_league_id ?? undefined;
+  }
   return { seasons, warning };
 });

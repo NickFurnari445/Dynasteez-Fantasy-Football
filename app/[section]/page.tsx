@@ -1,11 +1,14 @@
+import { Avatar } from "../components/avatar";
 import Link from "next/link";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { getHistory, getLeagueData } from "@/lib/sleeper";
+import { getHistory, getCurrentLeagueData } from "@/lib/sleeper";
 import { DataStatus, Empty, LoadingLeague, Standings, TeamLink } from "../components/league-views";
+import { Handbook } from "../components/handbook";
+import { LeagueStatistics } from "../components/league-statistics";
 import type { LeagueData } from "@/lib/sleeper";
 
-const sections = { teams: "The teams", history: "League history", records: "The record book", draft: "Draft central", handbook: "League handbook" };
+const sections = { teams: "The teams", history: "League history", records: "The record book", draft: "Draft central", handbook: "League handbook", "manager-history": "Manager History", "hall-of-champions": "Hall of Champions", "power-rankings": "Power Rankings", "this-week": "This Week", standings: "Standings" };
 export function generateStaticParams() { return Object.keys(sections).map(section=>({section})); }
 export async function generateMetadata({ params }: { params: Promise<{section:string}> }) {
   const { section } = await params;
@@ -18,18 +21,33 @@ async function History() {
   const { seasons, warning } = await getHistory();
   return <><p className="section-description">Seasons follow Sleeper’s previous league links. Results belong to each season’s own rosters and managers.</p>{warning && <div className="preview-notice">{warning}</div>}{seasons.length === 1 && seasons[0].league.data && !seasons[0].league.data.previous_league_id && <div className="preview-notice">Sleeper has not linked a previous league to this season. No earlier seasons or champions are inferred.</div>}{seasons.map(data=><section className="history-season" key={data.league.data?.league_id ?? "unavailable"}><DataStatus sources={data.sources}/><div className="panel"><div className="panel-heading"><div><div className="eyebrow">{data.league.data?.name ?? "League unavailable"}</div><h2>{data.league.data?.season ?? "Season unavailable"}</h2></div><span className="badge">{data.league.data?.status.replaceAll("_"," ") ?? "UNAVAILABLE"}</span></div><Standings teams={data.teams} linkTeams={false}/><p className="section-note">Season roster totals reported by Sleeper. Displayed order is not a championship result.</p></div></section>)}</>;
 }
-async function SectionContent({ params }: { params: Promise<{section:string}> }) {
+type Props = { params: Promise<{ section: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> };
+const statistics = new Set(["records", "manager-history", "hall-of-champions", "power-rankings", "this-week"]);
+
+async function SectionContent({ params, searchParams }: Props) {
   const { section } = await params;
   if (!Object.hasOwn(sections,section)) notFound();
+  if (section === "handbook") return <div className="section-page handbook-page"><Link className="back-link" href="/">← Back to overview</Link><Handbook/></div>;
   const title = sections[section as keyof typeof sections];
-  const data = section === "history" ? null : await getLeagueData();
+  const data = section === "history" || statistics.has(section) ? null : await getCurrentLeagueData();
   const league = data?.league.data;
-  return <div className="section-page"><Link className="back-link" href="/">← Back to overview</Link><div className="eyebrow">THE DYNASTEEZ PLAYBOOK</div><h1>{title}</h1>{data && <DataStatus sources={data.sources}/>}
+  return <div className="section-page"><Link className="back-link" href="/">← Back to overview</Link><div className="eyebrow">DYNASTEEZ FANTASY FOOTBALL</div><h1>{title}</h1>{data && <DataStatus sources={data.sources}/>}
     {section === "history" && <History/>}
-    {section === "teams" && data && <><p className="section-description">{league?.name ?? "League"} · {league?.season ?? "Season unavailable"}. Select a team to see its roster and confirmed draft picks.</p><div className="team-grid">{data.teams.map(team=><Link className="panel team-card" href={`/teams/${team.id}`} key={team.id}><span className={`team-mark tone-${team.id%5}`}>{team.id}</span><h2>{team.name}</h2><p>{team.manager ?? "Manager unavailable"}</p><small>View roster and picks ↗</small></Link>)}</div>{!data.teams.length && <Empty>Teams are temporarily unavailable.</Empty>}</>}
+    {section === "teams" && data && <><p className="section-description">{league?.name ?? "League"} · {league?.season ?? "Season unavailable"}. Select a team to see its roster and confirmed draft picks.</p><div className="team-grid">{data.teams.map(team=><Link className="panel team-card" href={`/teams/${team.id}`} key={team.id}><Avatar sources={team.avatars} size={48}/><h2>{team.name}</h2><p>{team.manager ?? "Manager unavailable"}</p><small>View roster and picks ↗</small></Link>)}</div>{!data.teams.length && <Empty>Teams are temporarily unavailable.</Empty>}</>}
     {section === "draft" && data && <Drafts data={data}/>}
-    {section === "records" && <div className="panel pending-item"><h2>No verified record book yet</h2><p>Current standings and linked season totals are available in League History. All-time and single-week records have not been calculated, so no record holders are claimed.</p><Link className="back-link" href="/history">Explore league history →</Link></div>}
-    {section === "handbook" && <><p className="section-description">Settings below come directly from Sleeper. Commissioner-written policies and bylaws have not been provided.</p>{league ? <><section className="panel settings-panel"><div className="panel-heading"><h2>League configuration</h2></div><dl className="settings-list">{[["League name",league.name],["Season",league.season],["Status",league.status.replaceAll("_"," ")],["Teams",league.total_rosters],["Playoff teams",league.settings.playoff_teams],["Playoffs begin",league.settings.playoff_week_start === undefined ? null : `Week ${league.settings.playoff_week_start}`],["Trade deadline",league.settings.trade_deadline === undefined ? null : `Week ${league.settings.trade_deadline}`],["Waiver budget",league.settings.waiver_budget],["Rookie draft rounds",league.settings.draft_rounds],["IR slots",league.settings.reserve_slots],["Taxi slots",league.settings.taxi_slots],["Roster slots",league.roster_positions?.join(" · ")]].map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value ?? "Unavailable"}</dd></div>)}</dl></section><details className="panel settings-panel"><summary>All Sleeper settings</summary><pre>{JSON.stringify(league.settings,null,2)}</pre></details><details className="panel settings-panel"><summary>Scoring settings (Sleeper field names)</summary><pre>{league.scoring_settings ? JSON.stringify(league.scoring_settings,null,2) : "Scoring settings unavailable"}</pre></details></> : <Empty>League settings are temporarily unavailable.</Empty>}<div className="preview-notice">Official league policies remain awaiting commissioner input. API settings do not replace the league’s written rules.</div></>}
+    {statistics.has(section) && <LeagueStatistics section={section} searchParams={searchParams}/>}
+    {section === "standings" && data && <>
+      <section className="panel feature-panel"><div className="panel-heading"><h2>{league?.season ?? "Current"} standings</h2></div><Standings teams={data.teams}/></section>
+      {league && <details className="panel settings-panel">
+        <summary>Sleeper league configuration and scoring</summary>
+        <dl className="settings-list">
+          <div><dt>Roster positions</dt><dd>{league.roster_positions?.join(" · ") ?? "Unavailable"}</dd></div>
+          <div><dt>Playoff teams</dt><dd>{league.settings.playoff_teams ?? "Unavailable"}</dd></div>
+          <div><dt>Playoffs begin</dt><dd>{league.settings.playoff_week_start ? `Week ${league.settings.playoff_week_start}` : "Unavailable"}</dd></div>
+        </dl>
+        <pre>{JSON.stringify({ settings: league.settings, scoring: league.scoring_settings ?? null }, null, 2)}</pre>
+      </details>}
+    </>}
   </div>;
 }
-export default function SectionPage(props: { params: Promise<{section:string}> }) { return <Suspense fallback={<LoadingLeague/>}><SectionContent {...props}/></Suspense>; }
+export default function SectionPage(props: Props) { return <Suspense fallback={<LoadingLeague/>}><SectionContent {...props}/></Suspense>; }
