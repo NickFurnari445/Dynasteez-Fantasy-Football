@@ -76,7 +76,7 @@ h1 span{color:var(--accent)}
 .panel-heading .eyebrow{font-size:8px;letter-spacing:1.6px}
 h2{font-size:21px;font-weight:700;letter-spacing:-.6px;line-height:1.3}
 .panel-heading h2{margin-top:5px}
-.table-wrap{overflow-x:auto}
+.table-wrap{max-width:100%;overflow-x:auto}
 table{border-collapse:collapse;width:100%;text-align:left;white-space:nowrap}
 th{font-size:8px;font-weight:500;letter-spacing:1.2px;color:var(--muted);background:var(--gold-tint);padding:11px 16px;border-block:1px solid var(--border)}
 th:first-child,td:first-child{padding-left:24px;width:49px}
@@ -350,13 +350,19 @@ a:hover { text-decoration-color: var(--accent); }
 .stat-grid dt { color: var(--muted); font-size: 10px; letter-spacing: .06em; overflow-wrap: anywhere; }
 .stat-grid dd { order: -1; margin: 0; font-family: var(--condensed-font); font-weight: 700; font-size: 22px; font-variant-numeric: tabular-nums; }
 .matrix-wrap { margin: 0 16px 16px; }
-.matrix th, .matrix td { border: 1px solid var(--editorial-border); }
-.matrix th { background: #f7f7f6; text-transform: none; }
-.matrix td, .matrix thead th:not(:first-child) { text-align: center; }
-.matrix tbody th, .matrix thead th:first-child { z-index: 1; position: sticky; left: 0; min-width: 132px; max-width: 168px; white-space: normal; overflow-wrap: anywhere; font-family: var(--body-font); font-size: 13px; letter-spacing: 0; }
-.matrix thead th:not(:first-child) { vertical-align: middle; border-bottom: 2px solid var(--accent); }
-.matrix thead th:not(:first-child) span { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); max-height: 150px; white-space: normal; overflow-wrap: anywhere; text-align: center; font-family: var(--mono-font); font-size: 12px; letter-spacing: 0; }
-.matrix td, .matrix td:nth-child(2) { min-width: 62px; font-family: var(--mono-font); font-weight: 700; }
+.matrix { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; }
+.matrix th, .matrix td { border: 0; border-right: 1px solid var(--editorial-border); border-bottom: 1px solid var(--editorial-border); padding: 10px; }
+.matrix th { text-transform: none; white-space: normal; overflow-wrap: anywhere; }
+.matrix td, .matrix thead th:not(:first-child) { width: 110px; min-width: 110px; max-width: 110px; text-align: center; }
+.matrix tbody th, .matrix thead th:first-child {
+  position: sticky; left: 0; z-index: 1;
+  width: 132px; min-width: 132px; max-width: 132px;
+  background: var(--purple-tint); box-shadow: 2px 0 0 var(--editorial-border);
+  font-family: var(--body-font); font-size: 13px; letter-spacing: 0;
+}
+.matrix thead th { vertical-align: middle; border-bottom: 2px solid var(--accent); }
+.matrix thead th span { font-size: 12px; letter-spacing: 0; }
+.matrix td { font-family: var(--mono-font); font-weight: 700; }
 .matrix .matrix-self { background: #f0ede5; }
 .matrix .matrix-unplayed, .matrix .even { color: var(--muted); font-weight: 500; }
 .winning { background: var(--win-bg); color: var(--win); }
@@ -453,7 +459,7 @@ select:focus-visible, .table-wrap:focus-visible { outline: 2px solid var(--accen
   .profile-card, .matchup-card { padding: 19px; }
   .podium-card + .podium-card { border-inline-start: 0; border-top: 1px solid var(--editorial-border); }
   .matrix-wrap { margin-inline: 10px; }
-  .matrix tbody th, .matrix thead th:first-child { min-width: 105px; max-width: 125px; }
+  .matrix tbody th, .matrix thead th:first-child { width: 104px; min-width: 104px; max-width: 104px; }
 }
 @media print {
   .site-header, .site-footer, .back-link, .skip-link, .handbook-masthead nav { display: none !important; }
@@ -580,3 +586,55 @@ td .team-avatar, .schedule-side .team-avatar { margin-inline-end: 8px; }
 }
 
 .lineup-score small { display: block; color: var(--muted); font-size: 10px; }
+
+.standings-wrap { isolation: isolate; }
+.standings-table {
+  --rank-width: 48px;
+  --team-width: 150px;
+  min-width: 388px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.standings-table.with-odds { min-width: 520px; }
+.standings-table th, .standings-table td { padding: 10px 8px; }
+.standings-table :is(th, td):first-child { width: var(--rank-width); min-width: var(--rank-width); text-align: center; }
+.standings-table :is(th, td):nth-child(2) { min-width: var(--team-width); width: 43%; }
+.standings-table :is(th, td):nth-child(n+3) { min-width: 63px; text-align: right; font-variant-numeric: tabular-nums; }
+.standings-table.with-odds :is(th, td):last-child { min-width: 128px; }
+.standings-table thead th { text-transform: uppercase; }
+.standings-table tbody th {
+  background: var(--panel); border-top: 0; font: inherit; color: var(--foreground); letter-spacing: normal;
+}
+.standings-identity { display: flex; align-items: center; gap: 8px; }
+.standings-identity .team-name { margin: 0; min-width: 0; font-size: 12px; line-height: 1.3; }
+.standings-identity .team-name small { font-size: 10px; }
+.odds-value { margin-inline-start: auto; max-width: 136px; color: var(--odds-color); }
+.odds-value strong { font-size: 12px; }
+.odds-value small { font-size: 9px; margin-inline-start: 5px; }
+.odds-track { height: 4px; margin-top: 4px; border-radius: 3px; background: #e9e3ee; overflow: hidden; }
+.odds-track div { height: 100%; background: var(--odds-color); border-radius: inherit; }
+[data-band="green"] { --odds-color: #23774a; }
+[data-band="purple"] { --odds-color: #713cb0; }
+[data-band="orange"] { --odds-color: #a0480b; }
+[data-band="red"] { --odds-color: #b12d49; }
+.odds-explainer { color: var(--muted); padding: 12px 16px 0; font-size: 11px; line-height: 1.55; }
+.odds-explainer p { margin-top: 6px; }
+.odds-legend { display: flex; gap: 4px 12px; flex-wrap: wrap; padding: 0; margin: 0; list-style: none; }
+.odds-legend li { display: flex; gap: 4px; align-items: center; white-space: nowrap; }
+.odds-legend li span { width: 7px; height: 7px; border-radius: 50%; background: var(--odds-color); }
+.picks-table td:nth-child(n+3), .rankings-table td:nth-child(2) { min-width: 145px; max-width: 260px; white-space: normal; overflow-wrap: anywhere; }
+.team-card :is(h2, p), .matchup-side a { overflow-wrap: anywhere; }
+
+@media (min-width: 801px) {
+  .dashboard-grid { grid-template-columns: minmax(522px, 1.14fr) minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .standings-table { --rank-width: 43px; --team-width: 133px; table-layout: fixed; }
+  .standings-table :is(th, td):nth-child(2) { width: var(--team-width); max-width: var(--team-width); }
+  .standings-table.with-odds :is(th, td):last-child { width: 128px; }
+  .standings-table :is(th, td):nth-child(-n+2) { position: sticky; z-index: 1; }
+  .standings-table tbody :is(th, td):nth-child(-n+2) { background: var(--panel); }
+  .standings-table :is(th, td):first-child { left: 0; }
+  .standings-table :is(th, td):nth-child(2) { left: var(--rank-width); box-shadow: 2px 0 0 var(--border); }
+  .standings-identity .team-avatar { width: 26px; height: 26px; }
+}

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { getHistory, getCurrentLeagueData } from "@/lib/sleeper";
-import { DataStatus, Empty, LoadingLeague, Standings, TeamLink } from "../components/league-views";
+import { CurrentStandings, DataStatus, Empty, LoadingLeague, Standings, TeamLink } from "../components/league-views";
 import { Handbook } from "../components/handbook";
 import { LeagueStatistics } from "../components/league-statistics";
 import type { LeagueData } from "@/lib/sleeper";
@@ -15,7 +15,7 @@ export async function generateMetadata({ params }: { params: Promise<{section:st
   return { title: Object.hasOwn(sections,section) ? sections[section as keyof typeof sections] : "Page not found" };
 }
 function Drafts({ data }: { data: LeagueData }) {
-  return <><div className="pending-list">{data.drafts.data?.map(draft=><article key={draft.draft_id} className="panel pending-item"><div className="eyebrow">{draft.season} DRAFT</div><h2>{draft.type ?? "Format unavailable"}</h2><p>Status: {draft.status.replaceAll("_"," ")}</p><p>Rounds: {draft.settings?.rounds ?? "Unavailable"}</p><p>{draft.start_time ? new Date(draft.start_time).toLocaleString("en-US", {timeZone:"UTC"}) + " UTC" : "Start date not published"}</p><a className="back-link" href={`https://sleeper.com/draft/nfl/${draft.draft_id}`} target="_blank" rel="noopener noreferrer">Open draft on Sleeper ↗</a></article>)}</div>{!data.drafts.data?.length && <Empty>{data.drafts.error ? "Drafts are temporarily unavailable." : "No drafts reported by Sleeper."}</Empty>}<section className="panel picks-panel"><div className="panel-heading"><h2>Reported available picks</h2></div><p className="section-note">Untraded picks appear only for scheduled, unstarted drafts with published rounds. Other future picks shown here are explicitly reported trades; this is not a complete future inventory.</p>{data.picks?.length ? <div className="table-wrap"><table><thead><tr><th>SEASON</th><th>ROUND</th><th>ORIGINAL TEAM</th><th>CURRENT OWNER</th></tr></thead><tbody>{data.picks.map(pick=><tr key={`${pick.season}-${pick.round}-${pick.originalRosterId}`}><td>{pick.season}</td><td>{pick.round}</td><td><TeamLink id={pick.originalRosterId} team={data.teams.find(t=>t.id===pick.originalRosterId)}/></td><td><TeamLink id={pick.ownerId} team={data.teams.find(t=>t.id===pick.ownerId)}/></td></tr>)}</tbody></table></div> : <Empty>{data.picks === null ? "Pick ownership is temporarily unavailable." : "No available picks can currently be confirmed from the published draft and trade data."}</Empty>}</section></>;
+  return <><div className="pending-list">{data.drafts.data?.map(draft=><article key={draft.draft_id} className="panel pending-item"><div className="eyebrow">{draft.season} DRAFT</div><h2>{draft.type ?? "Format unavailable"}</h2><p>Status: {draft.status.replaceAll("_"," ")}</p><p>Rounds: {draft.settings?.rounds ?? "Unavailable"}</p><p>{draft.start_time ? new Date(draft.start_time).toLocaleString("en-US", {timeZone:"UTC"}) + " UTC" : "Start date not published"}</p><a className="back-link" href={`https://sleeper.com/draft/nfl/${draft.draft_id}`} target="_blank" rel="noopener noreferrer">Open draft on Sleeper ↗</a></article>)}</div>{!data.drafts.data?.length && <Empty>{data.drafts.error ? "Drafts are temporarily unavailable." : "No drafts reported by Sleeper."}</Empty>}<section className="panel picks-panel"><div className="panel-heading"><h2>Reported available picks</h2></div><p className="section-note">Untraded picks appear only for scheduled, unstarted drafts with published rounds. Other future picks shown here are explicitly reported trades; this is not a complete future inventory.</p>{data.picks?.length ? <div className="table-wrap" role="region" aria-label="Reported available picks" tabIndex={0}><table className="picks-table"><thead><tr><th>SEASON</th><th>ROUND</th><th>ORIGINAL TEAM</th><th>CURRENT OWNER</th></tr></thead><tbody>{data.picks.map(pick=><tr key={`${pick.season}-${pick.round}-${pick.originalRosterId}`}><td>{pick.season}</td><td>{pick.round}</td><td><TeamLink id={pick.originalRosterId} team={data.teams.find(t=>t.id===pick.originalRosterId)}/></td><td><TeamLink id={pick.ownerId} team={data.teams.find(t=>t.id===pick.ownerId)}/></td></tr>)}</tbody></table></div> : <Empty>{data.picks === null ? "Pick ownership is temporarily unavailable." : "No available picks can currently be confirmed from the published draft and trade data."}</Empty>}</section></>;
 }
 async function History() {
   const { seasons, warning } = await getHistory();
@@ -31,13 +31,15 @@ async function SectionContent({ params, searchParams }: Props) {
   const title = sections[section as keyof typeof sections];
   const data = section === "history" || statistics.has(section) ? null : await getCurrentLeagueData();
   const league = data?.league.data;
+  const oddsOrder = section === "standings" ? (await searchParams).odds : undefined;
+  const sort = oddsOrder === "asc" || oddsOrder === "desc" ? oddsOrder : "rank";
   return <div className="section-page"><Link className="back-link" href="/">← Back to overview</Link><div className="eyebrow">DYNASTEEZ FANTASY FOOTBALL</div><h1>{title}</h1>{data && <DataStatus sources={data.sources}/>}
     {section === "history" && <History/>}
     {section === "teams" && data && <><p className="section-description">{league?.name ?? "League"} · {league?.season ?? "Season unavailable"}. Select a team to see its roster and confirmed draft picks.</p><div className="team-grid">{data.teams.map(team=><Link className="panel team-card" href={`/teams/${team.id}`} key={team.id}><Avatar sources={team.avatars} size={48}/><h2>{team.name}</h2><p>{team.manager ?? "Manager unavailable"}</p><small>View roster and picks ↗</small></Link>)}</div>{!data.teams.length && <Empty>Teams are temporarily unavailable.</Empty>}</>}
     {section === "draft" && data && <Drafts data={data}/>}
     {statistics.has(section) && <LeagueStatistics section={section} searchParams={searchParams}/>}
     {section === "standings" && data && <>
-      <section className="panel feature-panel"><div className="panel-heading"><h2>{league?.season ?? "Current"} standings</h2></div><Standings teams={data.teams}/></section>
+      <section className="panel feature-panel"><div className="panel-heading"><h2>{league?.season ?? "Current"} standings</h2></div><CurrentStandings teams={data.teams} sort={sort}/></section>
       {league && <details className="panel settings-panel">
         <summary>Sleeper league configuration and scoring</summary>
         <dl className="settings-list">

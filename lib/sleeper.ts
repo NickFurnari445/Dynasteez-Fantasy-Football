@@ -9,6 +9,7 @@ import { availablePicks, currentWeek, makeTeams, numeric, recentTransactions } f
 import type { Draft, League, Matchup, NflState, Players, Roster, TradedPick, Transaction, User } from "./sleeper-types";
 import { weekByeTeams, type NflGame, type NflPlayerWeek } from "./nfl-week";
 import { bracketDecided, finalGame, lastScored, seasonGames, validWeek, type BracketGame } from "./league-results";
+import { confirmedPlayoffOdds, preparePlayoffModel, simulatePlayoffOdds, type PlayoffOdds } from "./playoff-odds";
 
 export const LEAGUE_ID = "1394584575056822272";
 const cacheDirectory = path.join(process.cwd(), ".next", "cache", "sleeper");
@@ -139,6 +140,48 @@ export const getCurrentLeagueData = cache(async () => {
   const root = await getLeagueData();
   const id = await renewedLeague(root);
   return id && id !== LEAGUE_ID ? getLeagueData(id) : root;
+});
+
+const oddsSnapshots = new Map<string, { key: string; odds: PlayoffOdds }>();
+
+export const getCurrentPlayoffOdds = cache(async (): Promise<PlayoffOdds | null> => {
+  const data = await getCurrentLeagueData();
+  const league = data.league.data;
+  if (!league || data.league.error || data.rosters.error || data.state.error || data.state.data?.season !== league.season ||
+    !["in_season", "complete"].includes(league.status) ||
+    data.teams.length !== (league.total_rosters ?? league.settings.num_teams)) return null;
+
+  const { start_week: start = 1, playoff_week_start: end, playoff_teams: spots } = league.settings;
+  if (!validWeek(start) || !validWeek(end) || end <= start) return null;
+  const id = league.league_id;
+  const through = lastScored(league);
+  if (through >= end - 1 || league.status === "complete") {
+    const bracket = await client.get(`league/${id}/winners_bracket`, list(bracketCheck));
+    if (bracket.error || !bracket.data) return null;
+    const participants = bracket.data.flatMap(game => [game.t1, game.t2, game.w, game.l]
+      .filter((roster): roster is number => typeof roster === "number" && roster > 0));
+    return confirmedPlayoffOdds(data.teams, spots, participants);
+  }
+  if (through < start) return null;
+
+  const weeks: Matchup[][] = [];
+  for (let week = start; week < end; week += 6) {
+    const batch = await Promise.all(Array.from({ length: Math.min(6, end - week) }, (_, offset) =>
+      client.get(`league/${id}/matchups/${week + offset}`, list(matchupCheck))));
+    for (const source of batch) {
+      if (source.error || !source.data) return null;
+      weeks.push(source.data);
+    }
+  }
+  const model = preparePlayoffModel(league, data.teams, weeks);
+  if (!model) return null;
+  const key = hash("sha256", JSON.stringify([id, league.season, model]));
+  const previous = oddsSnapshots.get(id);
+  if (previous?.key === key) return previous.odds;
+  const odds = simulatePlayoffOdds(model, Number.parseInt(key.slice(0, 8), 16));
+  if (oddsSnapshots.size >= 4) oddsSnapshots.clear();
+  oddsSnapshots.set(id, { key, odds });
+  return odds;
 });
 
 // Matchups identify roster slots, not owners. Withhold attribution for any slot

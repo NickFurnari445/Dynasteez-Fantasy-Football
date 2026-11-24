@@ -34,7 +34,7 @@ export function seasonGames(league: League, state: NflState | null, week: number
     const scores = [matchupScore(a), matchupScore(b)] as Game["scores"];
     const hasScoring = pair.some((side, i) => scores[i] !== null && scores[i] !== 0
       || side.custom_points != null || side.starters_points?.some(value => value !== 0));
-    const activeWeek = state?.season === league.season && state.season_type === "regular" ? state.week : null;
+    const activeWeek = state?.season === league.season && state?.season_type === "regular" ? state.week : null;
     const started = validWeek(activeWeek) && week <= activeWeek && league.status === "in_season";
     const scored = week <= lastScored(league);
     const status = scored

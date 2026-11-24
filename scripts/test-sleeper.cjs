@@ -7,7 +7,7 @@ const ts = require('typescript');
 
 // Compile the framework-independent adapter modules using the project's TypeScript.
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dynasteez-sleeper-tests-'));
-for (const name of ['sleeper-types', 'sleeper-model', 'sleeper-cache', 'league-results', 'league-identity', 'weekly-editorial', 'weekly-lineup', 'nfl-week']) {
+for (const name of ['sleeper-types', 'sleeper-model', 'sleeper-cache', 'league-results', 'league-identity', 'weekly-editorial', 'weekly-lineup', 'nfl-week', 'playoff-odds']) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'lib', name + '.ts'), 'utf8');
   fs.writeFileSync(path.join(directory, name + '.js'), ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true } }).outputText);
 }
@@ -280,4 +280,73 @@ test('team logos from owner-matched seasons precede personal avatars', () => {
     { roster:{roster_id: 3}, user:{user_id:'manager', avatar:personal} },
     { roster:{roster_id: 8, metadata:{team_avatar:logo}}, user:{user_id:'manager'} },
   ]), [logo, `https://sleepercdn.com/avatars/thumbs/${personal}`]);
+});
+
+const { preparePlayoffModel, simulatePlayoffOdds, confirmedPlayoffOdds } = require(path.join(directory, 'playoff-odds.js'));
+
+test('playoff model uses finalized samples, ignores live scoring and requires the full schedule', () => {
+  const league = { status: 'in_season', total_rosters: 2, settings: { start_week: 2, last_scored_leg: 2, playoff_week_start: 5, playoff_teams: 1 } };
+  const teams = [
+    { id: 1, wins: 1, losses: 0, ties: 0, pointsFor: 130, pointsAgainst: 110, roster: {} },
+    { id: 2, wins: 0, losses: 1, ties: 0, pointsFor: 110, pointsAgainst: 130, roster: {} },
+  ];
+  const pair = (a, b) => [{ roster_id: 1, matchup_id: 1, points: a }, { roster_id: 2, matchup_id: 1, points: b }];
+  const weeks = [pair(130, 110), pair(75, 119), pair(0, 0)];
+  const input = preparePlayoffModel(league, teams, weeks);
+  assert.ok(input);
+  assert.deepEqual(input.entries.map(entry => entry.samples), [[130], [110]]);
+  assert.equal(input.weeks.length, 2);
+  const differentLiveScores = [weeks[0], pair(125, 99), weeks[2]];
+  assert.deepEqual(input, preparePlayoffModel(league, teams, differentLiveScores));
+  assert.equal(preparePlayoffModel(league, teams, weeks.slice(0, -1)), null);
+  assert.equal(preparePlayoffModel(league, teams, [weeks[0], weeks[1], []]), null);
+  assert.equal(preparePlayoffModel(league, teams, [pair(0, 0), weeks[1], weeks[2]]), null);
+  assert.equal(preparePlayoffModel(league, [{ ...teams[0], wins: 2 }, teams[1]], weeks), null);
+  const odds = simulatePlayoffOdds(input, 42);
+  assert.deepEqual(odds, simulatePlayoffOdds(input, 42));
+  assert.equal(odds[1].percent + odds[2].percent, 100);
+  assert.ok(odds[1].percent > odds[2].percent);
+});
+
+function playoffEntry(id, record, pf, pa, division = 0, samples = [100, 100, 100]) {
+  return { id, record, pf, pa, division, samples };
+}
+
+test('qualifiers use record, cumulative PF, then higher PA, and bounds certify only guaranteed outcomes', () => {
+  const entries = [
+    playoffEntry(1, 20, 0, 0), playoffEntry(2, 8, 100, 200),
+    playoffEntry(3, 8, 100, 199), playoffEntry(4, 8, 99, 300),
+    playoffEntry(5, 0, 900, 900), playoffEntry(6, 4, 1, 1),
+  ];
+  const odds = simulatePlayoffOdds({ entries, spots: 2, median: false, divisions: false, weeks: [[[0, 1], [2, 3], [4, 5]]] }, 10);
+  assert.deepEqual(odds[1], { percent: 100, status: 'clinched' });
+  assert.deepEqual(odds[2], { percent: 100, status: undefined });
+  assert.deepEqual(odds[3], { percent: 0, status: undefined });
+  assert.equal(odds[4].percent, 0);
+  assert.deepEqual(odds[5], { percent: 0, status: 'eliminated' });
+});
+
+test('division winners earn automatic bids and the median is an additional result using the same score', () => {
+  const entries = [
+    playoffEntry(1, 10, 400, 0, 1, [140, 140, 140]),
+    playoffEntry(2, 10, 300, 0, 1, [120, 120, 120]),
+    playoffEntry(3, 9, 200, 0, 2, [130, 130, 130]),
+    playoffEntry(4, 10, 100, 0, 2, [110, 110, 110]),
+  ];
+  const weeks = [[[0, 2], [1, 3]]];
+  const noMedian = simulatePlayoffOdds({ entries, weeks, spots: 2, median: false, divisions: true }, 42);
+  assert.equal(noMedian[4].percent, 100);
+  const median = simulatePlayoffOdds({ entries, weeks, spots: 2, median: true, divisions: true }, 42);
+  assert.equal(median[3].percent, 100);
+  assert.equal(median[1].percent, 100);
+});
+
+test('completed season uses actual published bracket and rejects incomplete or unknown participants', () => {
+  const fixed = [1, 2, 3, 4].map(id => ({ id }));
+  assert.deepEqual(confirmedPlayoffOdds(fixed, 2, [1, 4, 1]), {
+    1: { percent: 100, status: 'qualified' }, 2: { percent: 0, status: 'missed' },
+    3: { percent: 0, status: 'missed' }, 4: { percent: 100, status: 'qualified' },
+  });
+  assert.equal(confirmedPlayoffOdds(fixed, 2, [1]), null);
+  assert.equal(confirmedPlayoffOdds(fixed, 2, [1, 5]), null);
 });

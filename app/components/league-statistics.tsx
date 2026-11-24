@@ -194,7 +194,7 @@ function PowerRankings({ season }: { season: SeasonResults }) {
     <p className="section-description">Provisional formula · 45/85 (52.9%) regular-season winning percentage and 40/85 (47.1%) points per game. Ties count as half a win.</p>
     <p className="source-note">Win percentage already falls between 0 and 1. Scoring is scaled from the lowest to highest league average, with 0.5 for every team when all averages match. The weighted sum is shown on a 0–100 scale. Sleeper’s public league data does not supply verified rest-of-season projections.</p>
     <Panel title={season.league.season + " Power Rankings"}>
-      {rankings.length ? <div className="table-wrap" role="region" aria-label="Power rankings" tabIndex={0}><table><thead><tr>
+      {rankings.length ? <div className="table-wrap" role="region" aria-label="Power rankings" tabIndex={0}><table className="rankings-table"><thead><tr>
         {["Rank", "Team / manager", "Record", "Points for", "PPG", "Power score", "Ranking breakdown"].map(label => <th key={label} scope="col">{label}</th>)}
       </tr></thead><tbody>{rankings.map((row, index) => <tr key={row.team.id}>
         <td>{index + 1}</td><td><Avatar sources={row.team.avatars}/><Link href={`/teams/${row.team.id}`}>{row.team.name}</Link><small className="cell-detail">{manager(row.team)}</small></td>
