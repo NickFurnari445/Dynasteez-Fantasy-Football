@@ -4,12 +4,12 @@ import type { League, Matchup, Team } from "./sleeper-types";
 export const simulationCount = 20_000;
 export type PlayoffOdds = Record<number, { percent: number; status?: "clinched" | "eliminated" | "qualified" | "missed" }>;
 type Entry = { id: number; record: number; pf: number; pa: number; division: number; samples: number[] };
-type Model = { spots: number; median: boolean; divisions: boolean; entries: Entry[]; weeks: [number, number][][] };
+export type Model = { spots: number; median: boolean; divisions: boolean; entries: Entry[]; weeks: [number, number][][] };
 
 export function preparePlayoffModel(league: League, teams: Team[], weeks: Matchup[][]): Model | null {
   const { start_week: start = 1, playoff_week_start: end, playoff_teams: spots, last_scored_leg: through,
     league_average_match: median = 0, divisions = 0 } = league.settings;
-  if (!validWeek(start) || !validWeek(end) || end <= start || !validWeek(through) || through < start || through >= end - 1 ||
+  if (!validWeek(start) || !validWeek(end) || end <= start || !validWeek(through) || through < start ||
     !Number.isInteger(spots) || spots < 1 || spots > teams.length || teams.length !== (league.total_rosters ?? league.settings.num_teams) ||
     weeks.length !== end - start || ![0, 1].includes(median)) return null;
 
@@ -17,7 +17,7 @@ export function preparePlayoffModel(league: League, teams: Team[], weeks: Matchu
   for (const team of [...teams].sort((a, b) => a.id - b.id)) {
     const { wins, losses, ties, pointsFor, pointsAgainst } = team;
     const division = team.roster.settings?.division ?? 0;
-    const games = (through - start + 1) * (1 + median);
+    const games = (Math.min(through, end - 1) - start + 1) * (1 + median);
     if (wins === null || losses === null || ties === null || pointsFor === null || pointsAgainst === null ||
       ![wins, losses, ties].every(value => Number.isInteger(value) && value >= 0) || wins + losses + ties !== games) return null;
     entries.push({ id: team.id, record: 2 * wins + ties, pf: scoreCents(pointsFor), pa: scoreCents(pointsAgainst), division, samples: [] });
@@ -46,13 +46,13 @@ export function preparePlayoffModel(league: League, teams: Team[], weeks: Matchu
   return { entries, spots, median: !!median, divisions: groups.size > 1, weeks: remaining };
 }
 
-function scoringStats(samples: number[]) {
+export function scoringStats(samples: number[]) {
   const mean = samples.reduce((sum, score) => sum + score, 0) / samples.length;
   const deviation = Math.sqrt(samples.reduce((sum, score) => sum + (score - mean) ** 2, 0) / Math.max(1, samples.length - 1));
   return { mean, deviation };
 }
 
-function randomGenerator(seed: number) {
+export function randomGenerator(seed: number) {
   let state = seed;
   return () => {
     state = (state + 0x6D2B79F5) | 0;
@@ -79,7 +79,9 @@ function certainty(entry: Entry, model: Model): "clinched" | "eliminated" | unde
   }
 }
 
-export function simulatePlayoffOdds(model: Model, seed: number): PlayoffOdds {
+export function simulatePlayoffOdds(model: Model, seed: number, observe?: (result: {
+  ranked: number[]; seeds: number[]; pf: number[]; run: number;
+}) => void): PlayoffOdds {
   const { entries, weeks, spots, median, divisions } = model;
   const leagueStats = scoringStats(entries.flatMap(entry => entry.samples));
   const profiles = entries.map(entry => entry.samples.length >= 3 ? scoringStats(entry.samples) : leagueStats);
@@ -126,6 +128,7 @@ export function simulatePlayoffOdds(model: Model, seed: number): PlayoffOdds {
       qualifying.add(i);
     }
     for (const i of qualifying) counts[i]++;
+    observe?.({ ranked, seeds: [...qualifying], pf, run });
   }
 
   if (counts.reduce((sum, count) => sum + count, 0) !== simulationCount * spots) throw new Error("Incorrect playoff spot total");

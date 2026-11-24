@@ -7,13 +7,155 @@ const ts = require('typescript');
 
 // Compile the framework-independent adapter modules using the project's TypeScript.
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dynasteez-sleeper-tests-'));
-for (const name of ['sleeper-types', 'sleeper-model', 'sleeper-cache', 'league-results', 'league-identity', 'weekly-editorial', 'weekly-lineup', 'nfl-week', 'playoff-odds']) {
+for (const name of ['sleeper-types', 'sleeper-model', 'sleeper-cache', 'league-results', 'league-identity', 'weekly-editorial', 'weekly-lineup', 'nfl-week', 'playoff-odds', 'odds-math', 'season-odds', 'weekly-odds', 'odds-history']) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'lib', name + '.ts'), 'utf8');
   fs.writeFileSync(path.join(directory, name + '.js'), ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true } }).outputText);
 }
 const model = require(path.join(directory, 'sleeper-model.js'));
 const results = require(path.join(directory, 'league-results.js'));
 const { createSleeperClient } = require(path.join(directory, 'sleeper-cache.js'));
+const oddsMath = require(path.join(directory, 'odds-math.js'));
+const existingPlayoff = require(path.join(directory, 'playoff-odds.js'));
+const seasonOdds = require(path.join(directory, 'season-odds.js'));
+const weeklyOdds = require(path.join(directory, 'weekly-odds.js'));
+
+test('fair American odds round at the correct threshold and handle endpoints', () => {
+  const { americanOdds, probabilityLabel, pointSpreads } = oddsMath;
+  for (const [raw, displayed] of [[131.48, '+130'], [248.43, '+250'], [478.03, '+480'], [-115.98, '−115'],
+    [-158.40, '−160'], [-262.32, '−260'], [4247.83, '+4250']]) {
+    const p = raw > 0 ? 100 / (100 + raw) : -raw / (100 - raw);
+    assert.equal(americanOdds(p), displayed);
+  }
+  assert.equal(americanOdds(0.5), '+100');
+  assert.equal(americanOdds(0), null);
+  assert.equal(americanOdds(1), null);
+  assert.equal(probabilityLabel(0), '<0.015%');
+  assert.equal(probabilityLabel(1, 20000, true), '100.0%');
+  assert.deepEqual(pointSpreads(152.4, 138.7), ['−13.5', '+13.5']);
+  assert.deepEqual(pointSpreads(138.7, 152.4), ['+13.5', '−13.5']);
+  assert.deepEqual(pointSpreads(100, 100), ['PK', 'PK']);
+});
+
+test('lineup totals require all verified starter slots and preserve zero', () => {
+  const projections = new Map([['A', 0], ['B', 11.25], ['BENCH', 20]]);
+  assert.equal(weeklyOdds.lineupTotal(['A', 'B'], 2, projections), 11.25);
+  assert.equal(weeklyOdds.lineupTotal(['A'], 1, projections), 0);
+  for (const starters of [['A'], ['A', 'A'], ['A', '0'], ['A', 'missing']])
+    assert.equal(weeklyOdds.lineupTotal(starters, 2, projections), null);
+  assert.equal(weeklyOdds.starterProjection({ stats: { pts_ppr: 0 } }, 'K', { xpm: 1 }), 0);
+  assert.equal(weeklyOdds.starterProjection(undefined, 'K', { xpm: 1 }), null);
+  assert.equal(weeklyOdds.starterProjection({ stats: { pts_ppr: 8, fgm: 1, fgm_50p: 1, xpm: 2 } },
+    'K', { fgm_50_59: 5, fgm_60p: 6, xpm: 1 }), null);
+  assert.equal(weeklyOdds.starterProjection({ stats: { pts_ppr: 9, fgm: 1, fgm_30_39: 1, xpm: 2 } },
+    'K', { fgm_30_39: 3, xpm: 1 }), 5);
+  assert.equal(weeklyOdds.starterProjection({ stats: { pts_ppr: 7, pts_allow: 18, pts_allow_14_20: 1, sack: 2.25 } },
+    'DEF', { pts_allow_14_20: 1, sack: 1 }), 3.25);
+});
+
+const totalOdds = row => Object.values(row).reduce((sum, p) => sum + p, 0);
+const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} ≠ ${expected}`);
+function seasonFixture() {
+  return { weeks: [], spots: 6, median: false, divisions: false,
+    entries: Array.from({ length: 10 }, (_, i) => ({ id: i + 1, record: 22 - i * 2, pf: 120000 - i * 1000,
+      pa: 110000, division: 0, samples: [120 - i, 90 - i, 110 - i] })) };
+}
+const bracketFixture = () => ({ start: 15, through: 14, lengths: [1,1,1], reseed: true,
+  bracket: [], actual: {}, customWeeks: null, custom: true, fixedSeeds: [1,2,3,4,5,6] });
+
+test('shared futures conserve probability, preserve playoff results and produce a complete draft order', () => {
+  const input = seasonFixture();
+  input.weeks = [[[0, 9], [1, 8], [2, 7], [3, 6], [4, 5]]];
+  const options = bracketFixture();
+  options.through = 13;
+  delete options.fixedSeeds;
+  const first = seasonOdds.simulateSeason(input, 1234, options);
+  assert.deepEqual(first, seasonOdds.simulateSeason(input, 1234, options));
+  assert.deepEqual(first.playoffOdds, existingPlayoff.simulatePlayoffOdds(input, 1234));
+  const { markets, seeds, draftOrder } = first.futures;
+  for (const [market, sum] of Object.entries({ champion: 1, finalist: 2, playoffs: 6, miss: 4, bye: 2, regular: 1, scoring: 1, draft: 1, punishment: 1 }))
+    near(totalOdds(markets[market]), sum);
+  for (const row of [...seeds, ...draftOrder]) near(totalOdds(row), 1);
+  for (const { id } of input.entries) {
+    near(seeds.reduce((sum, row) => sum + row[id], markets.miss[id]), 1);
+    near(draftOrder.reduce((sum, row) => sum + row[id], 0), 1);
+    assert.equal(markets.draft[id], draftOrder[0][id]);
+    assert.equal(markets.punishment[id], draftOrder[1][id]);
+    assert.ok(markets.champion[id] <= markets.finalist[id] && markets.finalist[id] <= markets.playoffs[id]);
+  }
+});
+
+test('postseason keeps finalized legs and honors seeds, reseeding, and the two-week consolation aggregate', () => {
+  const input = seasonFixture();
+  const options = { ...bracketFixture(), through: 17, customWeeks: [15,16], actual: {
+    15: { 3: 100, 6: 120, 4: 120, 5: 100, 7: 150, 8: 120, 9: 200, 10: 120 },
+    16: { 1: 100, 2: 150, 4: 155, 5: 110, 6: 120, 3: 120, 7: 100, 8: 150, 9: 100, 10: 140 },
+    17: { 1: 100, 2: 170, 4: 150, 6: 170 },
+  }};
+  const { futures } = seasonOdds.simulateSeason(input, 5, options);
+  assert.equal(futures.markets.bye[1], 1);
+  assert.equal(futures.markets.bye[2], 1);
+  assert.equal(futures.markets.champion[6], 1);
+  assert.equal(futures.markets.finalist[6], 1);
+  assert.equal(futures.markets.draft[9], 1);
+  assert.equal(futures.markets.punishment[10], 1);
+  assert.equal(futures.draftOrder[2][8], 1);
+  assert.equal(futures.draftOrder[4][3], 1);
+  const unseeded = seasonOdds.simulateSeason(input, 5, { ...options, reseed: false }).futures;
+  assert.equal(unseeded.markets.finalist[4], 1);
+  assert.equal(unseeded.markets.finalist[2], 1);
+  assert.equal(seasonOdds.simulateSeason(input, 5, { ...options, customWeeks: null }).futures.markets.draft, undefined);
+  const official = seasonOdds.simulateSeason(input, 5, { ...options, bracket: [
+    { r: 3, m: 6, p: 1, t1: 4, t2: 6, w: 4, l: 6 },
+  ] }).futures;
+  assert.equal(official.markets.champion[4], 1);
+  assert.equal(official.certified.champion[4], 1);
+});
+
+test('a multi-week playoff round preserves each finalized scoring leg', () => {
+  const model = { ...seasonFixture(), spots: 2, entries: seasonFixture().entries.slice(0,2) };
+  const options = { ...bracketFixture(), fixedSeeds: [1,2], through: 16, lengths: [2],
+    actual: { 15: {1: 98, 2: 140}, 16: {1: 142, 2: 130} } };
+  assert.equal(seasonOdds.simulateSeason(model, 6, options).futures.markets.champion[2], 1);
+});
+
+test('weekly game probabilities reconcile, share scores with specials, and omit unverified lines', () => {
+  const games = [
+    { id: 'A', status: 'upcoming', sides: [1,2] },
+    { id: 'B', status: 'upcoming', sides: [3,4] },
+  ];
+  const profiles = { 1: { mean: 160, deviation: 12 }, 2: { mean: 150, deviation: 12 },
+    3: { mean: 110, deviation: 25 }, 4: { mean: 100, deviation: 25 } };
+  const first = weeklyOdds.simulateWeekly(games, profiles, 200, [{ id: 'X', mean: 12, deviation: 4 }, { id: 'Y', mean: 13, deviation: 9 }], true, 7);
+  for (const line of Object.values(first.lines)) {
+    near(line.sides[0].win + line.sides[1].win + line.tie, 1);
+    near(line.sides[0].moneyline + line.sides[1].moneyline, 1);
+  }
+  assert.equal(first.lines.A.sides[0].spread, first.lines.B.sides[0].spread);
+  assert.ok(first.lines.A.sides[0].win > first.lines.B.sides[0].win);
+  for (const row of Object.values(first.specials)) near(totalOdds(row), 1);
+  const incomplete = weeklyOdds.simulateWeekly([{ ...games[0], status: 'final' }, { ...games[1], status: 'live' }],
+    profiles, null, null, true, 7);
+  assert.deepEqual(incomplete, { lines: {}, specials: {} });
+  assert.deepEqual(weeklyOdds.simulateWeekly(games, {}, null, null, false, 7), incomplete);
+});
+
+test('weekly history is durable, versioned and race-safe', async () => {
+  const { snapshotStore } = require(path.join(directory, 'odds-history.js'));
+  const root = path.join(directory, 'snapshots');
+  const snapshot = { league: '12345', season: '2026', week: 10, version: '1', at: '2026-11-20T00:00:00.000Z',
+    futures: { markets: { champion: { 1: 0.125123 } }, seeds: [], seedsConfirmed: false, certified: {} } };
+  const outcomes = await Promise.all(Array.from({ length: 5 }, () => snapshotStore(root).save(snapshot)));
+  assert.equal(outcomes.filter(Boolean).length, 1);
+  assert.deepEqual(await snapshotStore(root).list('12345','2026','1'), [snapshot]);
+  assert.deepEqual(await snapshotStore(root).list('12345','2026','2'), []);
+  assert.equal(await snapshotStore().save(snapshot), false);
+  const pregame = { league: snapshot.league, season: snapshot.season, week: 11, version: snapshot.version, at: snapshot.at,
+    lines: { A: { rosterIds: [1, 2], sides: [], tie: null, decisions: 0 } } };
+  assert.equal(await snapshotStore(root).savePregame(pregame), true);
+  assert.equal(await snapshotStore(root).savePregame(pregame), false);
+  assert.deepEqual(await snapshotStore(root).getPregame('12345', '2026', '1', 11), pregame);
+  assert.deepEqual(await snapshotStore(root).list('12345', '2026', '1'), [snapshot]);
+});
 after(() => fs.rmSync(directory, { recursive: true, force: true }));
 const isPayload = value => value && typeof value.count === 'number';
 

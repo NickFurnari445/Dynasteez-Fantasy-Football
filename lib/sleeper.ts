@@ -5,11 +5,12 @@ import path from "node:path";
 import { mkdir, readdir } from "node:fs/promises";
 import { hash } from "node:crypto";
 import { createSleeperClient, type ApiResult } from "./sleeper-cache";
-import { availablePicks, currentWeek, makeTeams, numeric, recentTransactions } from "./sleeper-model";
+import { availablePicks, currentWeek, makeTeams, matchupScore, numeric, recentTransactions } from "./sleeper-model";
 import type { Draft, League, Matchup, NflState, Players, Roster, TradedPick, Transaction, User } from "./sleeper-types";
 import { weekByeTeams, type NflGame, type NflPlayerWeek } from "./nfl-week";
-import { bracketDecided, finalGame, lastScored, seasonGames, validWeek, type BracketGame } from "./league-results";
+import { bracketDecided, finalGame, lastScored, scoreCents, seasonGames, validWeek, type BracketGame } from "./league-results";
 import { confirmedPlayoffOdds, preparePlayoffModel, simulatePlayoffOdds, type PlayoffOdds } from "./playoff-odds";
+import { bracketOrder, playoffDimensions, simulateSeason, type Futures, type Postseason } from "./season-odds";
 
 export const LEAGUE_ID = "1394584575056822272";
 const cacheDirectory = path.join(process.cwd(), ".next", "cache", "sleeper");
@@ -142,9 +143,10 @@ export const getCurrentLeagueData = cache(async () => {
   return id && id !== LEAGUE_ID ? getLeagueData(id) : root;
 });
 
-const oddsSnapshots = new Map<string, { key: string; odds: PlayoffOdds }>();
+const oddsSnapshots = new Map<string, { key: string; result: { playoffOdds: PlayoffOdds; futures: Futures | null } }>();
 
-export const getCurrentPlayoffOdds = cache(async (): Promise<PlayoffOdds | null> => {
+export const oddsModelVersion = "1";
+export const getCurrentSeasonOdds = cache(async () => {
   const data = await getCurrentLeagueData();
   const league = data.league.data;
   if (!league || data.league.error || data.rosters.error || data.state.error || data.state.data?.season !== league.season ||
@@ -155,12 +157,15 @@ export const getCurrentPlayoffOdds = cache(async (): Promise<PlayoffOdds | null>
   if (!validWeek(start) || !validWeek(end) || end <= start) return null;
   const id = league.league_id;
   const through = lastScored(league);
+  let confirmed: PlayoffOdds | null = null;
+  let official: BracketGame[] = [];
   if (through >= end - 1 || league.status === "complete") {
     const bracket = await client.get(`league/${id}/winners_bracket`, list(bracketCheck));
     if (bracket.error || !bracket.data) return null;
     const participants = bracket.data.flatMap(game => [game.t1, game.t2, game.w, game.l]
       .filter((roster): roster is number => typeof roster === "number" && roster > 0));
-    return confirmedPlayoffOdds(data.teams, spots, participants);
+    confirmed = confirmedPlayoffOdds(data.teams, spots, participants);
+    official = bracket.data;
   }
   if (through < start) return null;
 
@@ -169,20 +174,74 @@ export const getCurrentPlayoffOdds = cache(async (): Promise<PlayoffOdds | null>
     const batch = await Promise.all(Array.from({ length: Math.min(6, end - week) }, (_, offset) =>
       client.get(`league/${id}/matchups/${week + offset}`, list(matchupCheck))));
     for (const source of batch) {
-      if (source.error || !source.data) return null;
+      if (source.error || !source.data) return confirmed ? { playoffOdds: confirmed, futures: null } : null;
       weeks.push(source.data);
     }
   }
   const model = preparePlayoffModel(league, data.teams, weeks);
-  if (!model) return null;
+  if (!model) return confirmed ? { playoffOdds: confirmed, futures: null } : null;
   const key = hash("sha256", JSON.stringify([id, league.season, model]));
+  const { rounds } = playoffDimensions(spots);
+  const settings = league.settings;
+  const ranked = [...model.entries].sort((a, b) => b.record - a.record || b.pf - a.pf || b.pa - a.pa);
+  const seeds = ranked.slice(0, spots).map(entry => entry.id);
+  const slots = bracketOrder(2 ** rounds).map(position => seeds[position] ?? null);
+  const opening = official.filter(game => game.r === 1 && game.p == null && game.t1 && game.t2);
+  const matchesOpening = opening.every(game => slots.some((team, i) =>
+    i % 2 === 0 && team !== null && slots[i + 1] !== null
+    && [game.t1, game.t2].includes(team) && [game.t1, game.t2].includes(slots[i + 1])));
+  // Public bracket membership is authoritative. If manual seeding changes membership,
+  // retain verified qualification and withhold markets that require an exact seed order.
+  if (through >= end - 1 && (!confirmed || !seeds.every(seed => confirmed![seed]?.percent === 100) || model.divisions || !matchesOpening
+    || ranked.some((entry, i) => i > 0 && entry.record === ranked[i - 1].record
+      && entry.pf === ranked[i - 1].pf && entry.pa === ranked[i - 1].pa))) {
+    return confirmed ? { playoffOdds: confirmed, futures: null } : null;
+  }
+  const actual: Postseason["actual"] = {};
+  const customWeeks: number[] = [];
+  if (confirmed && validWeek(data.week) && data.week >= end) {
+    const postseasonEnd = Math.min(18, Math.max(through, end + rounds - 1));
+    const sources = await Promise.all(Array.from({ length: postseasonEnd - end + 1 }, (_, i) => getWeeklyMatchups(id, end + i)));
+    for (const [i, source] of sources.entries()) {
+      const week = end + i;
+      if (source.error || !source.data) {
+        if (week <= through) return { playoffOdds: confirmed, futures: null };
+        continue;
+      }
+      if (week <= through) actual[week] = Object.fromEntries(source.data.flatMap(row => {
+        const points = matchupScore(row);
+        return points === null ? [] : [[row.roster_id, scoreCents(points)]];
+      }));
+      const pairs = seasonGames(league, data.state.data, week, source.data, new Set(ranked.map(entry => entry.id)));
+      if (ranked.length === 10 && [[6, 7], [8, 9]].every(([a, b]) => pairs.some(game =>
+        (week > through || finalGame(game)) && game.sides.includes(ranked[a].id) && game.sides.includes(ranked[b].id)))) customWeeks.push(week);
+    }
+  }
+  const postseason: Postseason | null = settings.playoff_round_type === 0 && [0, 1].includes(settings.playoff_seed_type) &&
+    !model.divisions && rounds > 0 && end + rounds - 1 <= 18 ? {
+      start: end, through, lengths: Array<number>(rounds).fill(1), reseed: settings.playoff_seed_type === 1,
+      bracket: official, fixedSeeds: confirmed ? seeds : undefined, actual, custom: true,
+      customWeeks: customWeeks.length === 2 && customWeeks[1] === customWeeks[0] + 1 ? customWeeks : null,
+    } : null;
+  const versioned = hash("sha256", JSON.stringify([oddsModelVersion, key, postseason]));
   const previous = oddsSnapshots.get(id);
-  if (previous?.key === key) return previous.odds;
-  const odds = simulatePlayoffOdds(model, Number.parseInt(key.slice(0, 8), 16));
+  if (previous?.key === versioned) return previous.result;
+  const seed = Number.parseInt(key.slice(0, 8), 16);
+  let result: { playoffOdds: PlayoffOdds; futures: Futures | null };
+  try {
+    result = simulateSeason(model, seed, postseason);
+  } catch (error) {
+    console.warn("[Odds Center] Expanded simulation unavailable", error);
+    result = { playoffOdds: confirmed ?? simulatePlayoffOdds(model, seed), futures: null };
+  }
+  if (confirmed) result.playoffOdds = confirmed;
   if (oddsSnapshots.size >= 4) oddsSnapshots.clear();
-  oddsSnapshots.set(id, { key, odds });
-  return odds;
+  oddsSnapshots.set(id, { key: versioned, result });
+  return result;
 });
+
+export const getCurrentPlayoffOdds = cache(async (): Promise<PlayoffOdds | null> =>
+  (await getCurrentSeasonOdds())?.playoffOdds ?? null);
 
 // Matchups identify roster slots, not owners. Withhold attribution for any slot
 // whose primary ownership changed while this installation was observing it.

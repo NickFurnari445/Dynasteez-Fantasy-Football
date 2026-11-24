@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 
 const links = [
-  ["/", "Overview"], ["/standings", "Standings"], ["/this-week", "This Week"],
+  ["/", "Overview"], ["/standings", "Standings"], ["/this-week", "This Week"], ["/odds-center", "Odds Center"],
   ["/weekly-newsletter", "Weekly Newsletter"], ["/power-rankings", "Power Rankings"], ["/teams", "Teams"], ["/draft", "Draft"],
   ["/manager-history", "Manager History"], ["/hall-of-champions", "Hall of Champions"],
   ["/records", "Records"], ["/history", "League History"], ["/handbook", "League Handbook"],
